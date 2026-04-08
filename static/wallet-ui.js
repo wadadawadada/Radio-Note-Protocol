@@ -71,8 +71,8 @@ const els = {
   sendStatus: document.getElementById("sendStatus"),
   sendVaultAvailable: document.getElementById("sendVaultAvailable"),
   sendOnchainBalance: document.getElementById("sendOnchainBalance"),
-  vaultPanelAvailable: document.getElementById("vaultPanelAvailable"),
-  vaultPanelReserved: document.getElementById("vaultPanelReserved"),
+  depositAvailableValue: document.getElementById("depositAvailableValue"),
+  withdrawAvailableValue: document.getElementById("withdrawAvailableValue"),
   prepareAvailableValue: document.getElementById("prepareAvailableValue"),
   prepareEmptyState: document.getElementById("prepareEmptyState"),
   prepareEmptyCopy: document.getElementById("prepareEmptyCopy"),
@@ -443,9 +443,11 @@ function renderRecipientStatus() {
   const walletConfigured = Boolean(ui.state?.wallet?.configured && ui.state?.wallet?.address);
   const selectedOption = getCurrentPreparedSendOption();
   const hasPreparedSelection = Boolean(selectedOption?.noteIds?.length);
+  const showCheck = (show) => { if (els.walletCheckRecipientButton) els.walletCheckRecipientButton.hidden = !show; };
   if (!walletConfigured) {
     setStatus(els.walletRecipientStatus, "Create a local wallet first.", "warning");
     els.walletSendSubmitButton.disabled = true;
+    showCheck(false);
     return;
   }
   const nodeId = els.walletRecipientInput.value;
@@ -453,6 +455,7 @@ function renderRecipientStatus() {
   if (!nodeId || !node) {
     setStatus(els.walletRecipientStatus, "Pick a node and run Check before sending.", "");
     els.walletSendSubmitButton.disabled = true;
+    showCheck(false);
     return;
   }
   if (node.ready && node.addressValid) {
@@ -464,14 +467,18 @@ function renderRecipientStatus() {
       hasPreparedSelection ? "success" : "warning"
     );
     els.walletSendSubmitButton.disabled = !hasPreparedSelection;
+    showCheck(false);
     return;
   }
   if (node.checkStatus === "pending") {
     setStatus(els.walletRecipientStatus, `Waiting for ${node.name || node.id} to reply...`, "warning");
+    showCheck(false);
   } else if (node.checkError) {
     setStatus(els.walletRecipientStatus, node.checkError, "danger");
+    showCheck(true);
   } else {
     setStatus(els.walletRecipientStatus, `${node.name || node.id} is not checked yet`, "warning");
+    showCheck(true);
   }
   els.walletSendSubmitButton.disabled = true;
 }
@@ -611,9 +618,10 @@ async function renderWallet(state) {
   const incomingTransfers = Array.isArray(state.incomingTransfers) ? state.incomingTransfers : [];
   const ok = Boolean(wallet.configured && wallet.address);
   const address = wallet.address || "";
-  const onchain = wallet.onchainBalanceEth == null ? "-" : `${wallet.onchainBalanceEth} ETH`;
-  const available = wallet.availableLockedEth == null ? "-" : `${wallet.availableLockedEth} ETH`;
-  const reserved = wallet.reservedLockedEth == null ? "-" : `${wallet.reservedLockedEth} ETH`;
+  const fmtEth = (v) => v == null ? "-" : `${Number(v).toFixed(6).replace(/\.?0+$/, "")} ETH`;
+  const onchain = fmtEth(wallet.onchainBalanceEth);
+  const available = fmtEth(wallet.availableLockedEth);
+  const reserved = fmtEth(wallet.reservedLockedEth);
   const availableVaultEth = Number(wallet.availableLockedEth || 0);
   const onchainEth = Number(wallet.onchainBalanceEth || 0);
   const spendableOffgrid = preparedSummary.spendableEth == null ? "0" : preparedSummary.spendableEth;
@@ -642,8 +650,8 @@ async function renderWallet(state) {
   }
   els.sendVaultAvailable.textContent = spendableLabel;
   els.sendOnchainBalance.textContent = onchain;
-  els.vaultPanelAvailable.textContent = available;
-  els.vaultPanelReserved.textContent = reserved;
+  els.depositAvailableValue.textContent = onchain;
+  els.withdrawAvailableValue.textContent = available;
   els.prepareAvailableValue.textContent = available;
   const needsVaultDeposit = ok && availableVaultEth <= 0;
   setVisible(els.prepareEmptyState, needsVaultDeposit);
@@ -1167,10 +1175,21 @@ els.prepareForm?.addEventListener("submit", async (event) => {
     setStatus(els.prepareStatus, `Prepared ${short(data.note?.noteId || "")}`, "success");
     els.prepareForm.reset();
     els.prepareExpiryDaysInput.value = "7";
+    document.querySelectorAll(".wallet-preset-btn").forEach((b) => b.classList.toggle("is-active", b.dataset.days === "7"));
     await loadState();
   } catch (error) {
     setStatus(els.prepareStatus, error.message, "danger");
   }
+});
+
+document.querySelectorAll(".wallet-preset-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (els.prepareExpiryDaysInput) {
+      els.prepareExpiryDaysInput.value = btn.dataset.days;
+    }
+    document.querySelectorAll(".wallet-preset-btn").forEach((b) => b.classList.remove("is-active"));
+    btn.classList.add("is-active");
+  });
 });
 
 els.prepareEmptyAction?.addEventListener("click", () => {

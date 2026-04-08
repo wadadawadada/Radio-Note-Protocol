@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { URL } = require("url");
 const QRCode = require("qrcode");
 const { ethers } = require("ethers");
@@ -840,8 +840,49 @@ function pruneInboundTransferState() {
   }
 }
 
-function inferPythonCommand() {
-  return process.platform === "win32" ? "python" : "python3";
+function getPythonLaunchSpecs() {
+  const envCommand = String(process.env.PYTHON_EXECUTABLE || process.env.PYTHON || "").trim();
+  const specs = [];
+  if (envCommand) {
+    specs.push({ command: envCommand, args: [] });
+  }
+  if (process.platform === "win32") {
+    specs.push(
+      { command: "python", args: [] },
+      { command: "py", args: ["-3"] }
+    );
+  } else {
+    specs.push(
+      { command: "python3", args: [] },
+      { command: "python", args: [] }
+    );
+  }
+  const seen = new Set();
+  return specs.filter((spec) => {
+    const key = `${spec.command} ${spec.args.join(" ")}`.trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function resolvePythonLaunchSpec() {
+  const specs = getPythonLaunchSpecs();
+  for (const spec of specs) {
+    try {
+      const probe = spawnSync(spec.command, [...spec.args, "--version"], {
+        windowsHide: true,
+        stdio: "ignore",
+        timeout: 4000
+      });
+      if (!probe.error && probe.status === 0) {
+        return spec;
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return specs[0] || { command: process.platform === "win32" ? "python" : "python3", args: [] };
 }
 
 function startBridge() {
@@ -855,12 +896,16 @@ function startBridge() {
     localNodeId: null
   };
   try {
-    bridgeProcess = spawn(inferPythonCommand(), [BRIDGE_PATH], {
+    const python = resolvePythonLaunchSpec();
+    bridgeProcess = spawn(python.command, [...python.args, BRIDGE_PATH], {
       cwd: ROOT,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       env: {
         ...process.env,
-        MESHTASTIC_PORT: settings.meshtasticPort || ""
+        MESHTASTIC_PORT: settings.meshtasticPort || "",
+        PYTHONIOENCODING: process.env.PYTHONIOENCODING || "utf-8",
+        PYTHONUTF8: process.env.PYTHONUTF8 || "1"
       }
     });
   } catch (error) {

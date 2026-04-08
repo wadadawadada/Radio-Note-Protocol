@@ -226,14 +226,14 @@
                 <div class="wallet-section-divider">Send off-grid</div>
                 <div class="wallet-balance-pill"><span>Spendable off-grid:</span> <strong id="sendVaultAvailable">-</strong></div>
                 <form id="walletSendForm" class="wallet-form-grid">
-                  <label class="wallet-field" for="walletRecipientInput">
+                  <label class="wallet-field wallet-field-wide" for="walletRecipientInput">
                     <span>Recipient node</span>
-                    <div class="wallet-inline-row wallet-inline-row-compact">
-                      <select id="walletRecipientInput"><option value="">Select node</option></select>
-                      <button id="walletCheckRecipientButton" type="button" class="wallet-inline-action wallet-inline-action-compact">Check</button>
-                    </div>
+                    <select id="walletRecipientInput"><option value="">Select node</option></select>
                   </label>
-                  <div id="walletRecipientStatus" class="device-status-text wallet-field-wide">Pick a node and run Check before sending.</div>
+                  <div class="wallet-field-wide wallet-check-row">
+                    <div id="walletRecipientStatus" class="device-status-text">Pick a node and run Check before sending.</div>
+                    <button id="walletCheckRecipientButton" type="button" class="wallet-inline-action wallet-inline-action-compact" hidden>Check</button>
+                  </div>
                   <div class="wallet-field wallet-field-wide wallet-field-stack">
                     <div id="walletPreparedSliderWrap" class="wallet-send-slider-wrap" hidden>
                       <div class="wallet-send-slider-head">Select prepared amount</div>
@@ -272,11 +272,6 @@
 
             <section id="walletPanelVault" class="wallet-view-panel" hidden>
               <div class="wallet-screen-head"><div><h3>Prepare</h3><div class="wallet-home-subtitle">Turn vault ETH into ready off-grid notes</div></div></div>
-              <div class="wallet-fund-card">
-                <div class="modal-label">Vault balances</div>
-                <div class="wallet-balance-pill"><span>Available</span><strong id="vaultPanelAvailable">-</strong></div>
-                <div class="wallet-balance-pill"><span>Reserved</span><strong id="vaultPanelReserved">-</strong></div>
-              </div>
               <div id="prepareEmptyState" class="wallet-fund-card" hidden>
                 <div class="modal-label">Next step</div>
                 <div id="prepareEmptyCopy" class="wallet-hint">Deposit ETH into the vault first.</div>
@@ -284,41 +279,70 @@
                   <button id="prepareEmptyAction" type="button" class="wallet-create-btn">Deposit to vault</button>
                 </div>
               </div>
-              <div id="prepareCard" class="wallet-fund-card">
-                <div class="modal-label">Prepare off-grid amount</div>
-                <div class="wallet-balance-pill"><span>Available to prepare</span><strong id="prepareAvailableValue">-</strong></div>
-                <form id="prepareForm" class="wallet-form-grid">
-                  <label class="wallet-field" for="prepareAmountInput"><span>Amount ETH</span><input id="prepareAmountInput" type="text" placeholder="0.005"></label>
-                  <label class="wallet-field" for="prepareExpiryDaysInput"><span>Expiry days</span><input id="prepareExpiryDaysInput" type="number" min="1" value="7"></label>
-                  <div class="wallet-form-actions wallet-field-wide">
-                    <button type="submit">Prepare</button>
-                    <div id="prepareStatus" class="device-status-text" role="status" aria-live="polite"></div>
+              <div id="prepareCard" class="wallet-fund-card wallet-prepare-card">
+                <div class="wallet-prepare-header">
+                  <div class="wallet-prepare-title">Prepare off-grid note</div>
+                  <div class="wallet-prepare-avail">
+                    <span>Available: <strong id="prepareAvailableValue">-</strong></span>
                   </div>
+                </div>
+                <form id="prepareForm">
+                  <div class="wallet-swap-input-wrap">
+                    <input id="prepareAmountInput" class="wallet-swap-input" type="text" placeholder="0.000" autocomplete="off">
+                    <span class="wallet-swap-unit">ETH</span>
+                  </div>
+                  <div class="wallet-prepare-expiry-row">
+                    <span class="wallet-prepare-expiry-label">Expires in</span>
+                    <div class="wallet-prepare-presets">
+                      <button type="button" class="wallet-preset-btn" data-days="3">3d</button>
+                      <button type="button" class="wallet-preset-btn" data-days="7">7d</button>
+                      <button type="button" class="wallet-preset-btn" data-days="14">14d</button>
+                      <button type="button" class="wallet-preset-btn" data-days="30">30d</button>
+                    </div>
+                    <input id="prepareExpiryDaysInput" class="wallet-prepare-expiry-input" type="number" min="1" value="7">
+                    <span class="wallet-prepare-expiry-unit">days</span>
+                  </div>
+                  <button type="submit" class="wallet-swap-btn">Seal note</button>
+                  <div id="prepareStatus" class="device-status-text" role="status" aria-live="polite"></div>
                 </form>
+              </div>
+              <div class="wallet-vault-actions-row">
+                <div id="depositCard" class="wallet-fund-card wallet-swap-card">
+                  <div class="wallet-swap-flow">
+                    <span class="wallet-swap-from">Wallet ETH</span>
+                    <span class="wallet-swap-arrow">→</span>
+                    <span class="wallet-swap-to">Vault</span>
+                  </div>
+                  <div class="wallet-swap-balance">Available: <strong id="depositAvailableValue">-</strong></div>
+                  <form id="depositForm">
+                    <div class="wallet-swap-input-wrap">
+                      <input id="depositAmountInput" class="wallet-swap-input" type="text" placeholder="0.00" autocomplete="off">
+                      <span class="wallet-swap-unit">ETH</span>
+                    </div>
+                    <button type="submit" class="wallet-swap-btn">Deposit to vault</button>
+                    <div id="depositStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </form>
+                </div>
+                <div class="wallet-fund-card wallet-swap-card">
+                  <div class="wallet-swap-flow">
+                    <span class="wallet-swap-from">Vault</span>
+                    <span class="wallet-swap-arrow">→</span>
+                    <span class="wallet-swap-to">Wallet ETH</span>
+                  </div>
+                  <div class="wallet-swap-balance">Available: <strong id="withdrawAvailableValue">-</strong></div>
+                  <form id="withdrawForm">
+                    <div class="wallet-swap-input-wrap">
+                      <input id="withdrawAmountInput" class="wallet-swap-input" type="text" placeholder="0.00" autocomplete="off">
+                      <span class="wallet-swap-unit">ETH</span>
+                    </div>
+                    <button type="submit" class="wallet-swap-btn">Withdraw from vault</button>
+                    <div id="withdrawStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </form>
+                </div>
               </div>
               <div class="wallet-fund-card">
                 <div class="modal-label">Ready off-grid amounts</div>
-                <div id="preparedNotesList" class="card-list wallet-card-list"></div>
-              </div>
-              <div id="depositCard" class="wallet-fund-card">
-                <div class="modal-label">Deposit ETH</div>
-                <form id="depositForm" class="wallet-form-grid">
-                  <label class="wallet-field" for="depositAmountInput"><span>Amount ETH</span><input id="depositAmountInput" type="text" placeholder="0.05"></label>
-                  <div class="wallet-form-actions wallet-field-wide">
-                    <button type="submit">Deposit to vault</button>
-                    <div id="depositStatus" class="device-status-text" role="status" aria-live="polite"></div>
-                  </div>
-                </form>
-              </div>
-              <div class="wallet-fund-card">
-                <div class="modal-label">Withdraw available ETH</div>
-                <form id="withdrawForm" class="wallet-form-grid">
-                  <label class="wallet-field" for="withdrawAmountInput"><span>Amount ETH</span><input id="withdrawAmountInput" type="text" placeholder="0.01"></label>
-                  <div class="wallet-form-actions wallet-field-wide">
-                    <button type="submit">Withdraw from vault</button>
-                    <div id="withdrawStatus" class="device-status-text" role="status" aria-live="polite"></div>
-                  </div>
-                </form>
+                <div id="preparedNotesList" class="card-list wallet-card-list wallet-card-list-scroll"></div>
               </div>
             </section>
 

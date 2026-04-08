@@ -105,6 +105,33 @@ npm install
 python -m pip install -r requirements.txt
 ```
 
+### Cross-platform notes
+
+The app logic is cross-platform. The part that differs by OS is the **Meshtastic USB serial bridge**.
+
+#### Windows
+
+- usually works with `python` and `COM` ports like `COM7`
+- if `python` is not available in PATH, set `PYTHON_EXECUTABLE=py`
+
+#### macOS
+
+- serial ports usually look like `/dev/cu.usbmodem*` or `/dev/cu.usbserial*`
+- if needed, set `PYTHON_EXECUTABLE=python3`
+- you may need to allow terminal access to USB serial devices
+
+#### Linux
+
+- serial ports usually look like `/dev/ttyACM0` or `/dev/ttyUSB0`
+- if needed, set `PYTHON_EXECUTABLE=python3`
+- you may need serial permissions, for example:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+then log out and back in
+
 ## Environment
 
 Create `.env` from `.env.example`.
@@ -115,6 +142,7 @@ Minimal example:
 SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
 CONTRACT_ADDRESS=0x0000000000000000000000000000000000000000
 MESHTASTIC_PORT=
+PYTHON_EXECUTABLE=
 DEPLOYER_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY
 ```
 
@@ -127,7 +155,17 @@ Variables:
   Address of deployed `RadioNoteVault`.
 
 - `MESHTASTIC_PORT`
-  Optional fixed serial port like `COM7`. Leave empty for auto-detect.
+  Optional fixed serial port.
+  Examples:
+  - Windows: `COM7`
+  - macOS: `/dev/cu.usbmodemXXXX`
+  - Linux: `/dev/ttyACM0`
+
+- `PYTHON_EXECUTABLE`
+  Optional override for the Python command used by the Meshtastic bridge.
+  Examples:
+  - Windows: `python` or `py`
+  - macOS/Linux: `python3`
 
 - `DEPLOYER_PRIVATE_KEY`
   Test-only key used to deploy the contract.
@@ -168,6 +206,22 @@ Open:
 ```text
 http://127.0.0.1:7861
 ```
+
+### How Python bridge startup is resolved
+
+The backend now tries Python commands in this order:
+
+- Windows:
+  - `PYTHON_EXECUTABLE` if set
+  - `python`
+  - `py -3`
+
+- macOS / Linux:
+  - `PYTHON_EXECUTABLE` if set
+  - `python3`
+  - `python`
+
+If the bridge does not start, the first thing to try is setting `PYTHON_EXECUTABLE` explicitly in `.env`.
 
 ## Recommended 2-Node Test
 
