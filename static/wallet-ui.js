@@ -74,11 +74,16 @@ const els = {
   vaultPanelAvailable: document.getElementById("vaultPanelAvailable"),
   vaultPanelReserved: document.getElementById("vaultPanelReserved"),
   prepareAvailableValue: document.getElementById("prepareAvailableValue"),
+  prepareEmptyState: document.getElementById("prepareEmptyState"),
+  prepareEmptyCopy: document.getElementById("prepareEmptyCopy"),
+  prepareEmptyAction: document.getElementById("prepareEmptyAction"),
+  prepareCard: document.getElementById("prepareCard"),
   prepareForm: document.getElementById("prepareForm"),
   prepareAmountInput: document.getElementById("prepareAmountInput"),
   prepareExpiryDaysInput: document.getElementById("prepareExpiryDaysInput"),
   prepareStatus: document.getElementById("prepareStatus"),
   preparedNotesList: document.getElementById("preparedNotesList"),
+  depositCard: document.getElementById("depositCard"),
   depositForm: document.getElementById("depositForm"),
   depositAmountInput: document.getElementById("depositAmountInput"),
   depositStatus: document.getElementById("depositStatus"),
@@ -609,6 +614,8 @@ async function renderWallet(state) {
   const onchain = wallet.onchainBalanceEth == null ? "-" : `${wallet.onchainBalanceEth} ETH`;
   const available = wallet.availableLockedEth == null ? "-" : `${wallet.availableLockedEth} ETH`;
   const reserved = wallet.reservedLockedEth == null ? "-" : `${wallet.reservedLockedEth} ETH`;
+  const availableVaultEth = Number(wallet.availableLockedEth || 0);
+  const onchainEth = Number(wallet.onchainBalanceEth || 0);
   const spendableOffgrid = preparedSummary.spendableEth == null ? "0" : preparedSummary.spendableEth;
   const spendableLabel = `${spendableOffgrid} ETH`;
   els.heroWalletAddress.textContent = ok ? short(address) : "Not configured";
@@ -638,6 +645,25 @@ async function renderWallet(state) {
   els.vaultPanelAvailable.textContent = available;
   els.vaultPanelReserved.textContent = reserved;
   els.prepareAvailableValue.textContent = available;
+  const needsVaultDeposit = ok && availableVaultEth <= 0;
+  setVisible(els.prepareEmptyState, needsVaultDeposit);
+  setVisible(els.prepareCard, !needsVaultDeposit);
+  els.prepareAmountInput.disabled = needsVaultDeposit;
+  els.prepareExpiryDaysInput.disabled = needsVaultDeposit;
+  if (els.prepareForm?.querySelector('button[type="submit"]')) {
+    els.prepareForm.querySelector('button[type="submit"]').disabled = needsVaultDeposit;
+  }
+  if (els.prepareEmptyCopy) {
+    els.prepareEmptyCopy.textContent = onchainEth > 0
+      ? `Vault is empty. Deposit some of your ${wallet.onchainBalanceEth} ETH on-chain balance first, then prepare off-grid chunks.`
+      : "Vault is empty and on-chain balance is zero. Fund the wallet first, then deposit into vault.";
+  }
+  if (els.prepareEmptyAction) {
+    els.prepareEmptyAction.textContent = onchainEth > 0 ? "Deposit to vault" : "Receive ETH first";
+  }
+  if (els.depositCard) {
+    els.depositCard.classList.toggle("wallet-fund-card-primary", needsVaultDeposit);
+  }
   setVisible(els.walletHomeNoWallet, !ok);
   setVisible(els.walletHomeSummary, ok);
   setVisible(els.walletReceiveNoWallet, !ok);
@@ -1126,6 +1152,13 @@ els.withdrawForm?.addEventListener("submit", async (event) => {
 els.prepareForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
+    if (Number(ui.state?.wallet?.availableLockedEth || 0) <= 0) {
+      setStatus(els.prepareStatus, "Deposit ETH into vault first.", "warning");
+      ui.walletView = "vault";
+      updateWalletPanels();
+      els.depositAmountInput?.focus();
+      return;
+    }
     setStatus(els.prepareStatus, "Preparing off-grid amount...", "warning");
     const data = await post("/api/offgrid/prepare", {
       amountEth: els.prepareAmountInput.value.trim(),
@@ -1138,6 +1171,20 @@ els.prepareForm?.addEventListener("submit", async (event) => {
   } catch (error) {
     setStatus(els.prepareStatus, error.message, "danger");
   }
+});
+
+els.prepareEmptyAction?.addEventListener("click", () => {
+  const onchainEth = Number(ui.state?.wallet?.onchainBalanceEth || 0);
+  if (onchainEth > 0) {
+    ui.walletView = "vault";
+    updateWalletPanels();
+    els.depositAmountInput?.focus();
+    return;
+  }
+  ui.walletView = "receive";
+  ui.receiveTab = "wallet";
+  updateWalletPanels();
+  updateTabs();
 });
 
 els.walletSendForm?.addEventListener("submit", async (event) => {

@@ -277,7 +277,14 @@
                 <div class="wallet-balance-pill"><span>Available</span><strong id="vaultPanelAvailable">-</strong></div>
                 <div class="wallet-balance-pill"><span>Reserved</span><strong id="vaultPanelReserved">-</strong></div>
               </div>
-              <div class="wallet-fund-card">
+              <div id="prepareEmptyState" class="wallet-fund-card" hidden>
+                <div class="modal-label">Next step</div>
+                <div id="prepareEmptyCopy" class="wallet-hint">Deposit ETH into the vault first.</div>
+                <div class="wallet-form-actions" style="margin-top:6px">
+                  <button id="prepareEmptyAction" type="button" class="wallet-create-btn">Deposit to vault</button>
+                </div>
+              </div>
+              <div id="prepareCard" class="wallet-fund-card">
                 <div class="modal-label">Prepare off-grid amount</div>
                 <div class="wallet-balance-pill"><span>Available to prepare</span><strong id="prepareAvailableValue">-</strong></div>
                 <form id="prepareForm" class="wallet-form-grid">
@@ -293,7 +300,7 @@
                 <div class="modal-label">Ready off-grid amounts</div>
                 <div id="preparedNotesList" class="card-list wallet-card-list"></div>
               </div>
-              <div class="wallet-fund-card">
+              <div id="depositCard" class="wallet-fund-card">
                 <div class="modal-label">Deposit ETH</div>
                 <form id="depositForm" class="wallet-form-grid">
                   <label class="wallet-field" for="depositAmountInput"><span>Amount ETH</span><input id="depositAmountInput" type="text" placeholder="0.05"></label>

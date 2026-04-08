@@ -1010,6 +1010,12 @@ body {
   font-size: 10px;
 }
 
+.wallet-fund-card-primary {
+  border-top-color: #79a4be;
+  border-left-color: #79a4be;
+  box-shadow: inset 0 0 0 1px rgba(121, 164, 190, 0.18);
+}
+
 .wallet-note-card {
   gap: 6px;
 }

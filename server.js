@@ -418,6 +418,12 @@ function encodeProtocolPacket(kind, payload) {
   if (packetKind === "B" || packetKind === "NOTE_BUNDLE") {
     return `RNP|B|${base64UrlEncodeObject(payload)}`;
   }
+  if (packetKind === "E" || packetKind === "NOTE_REDEEMED") {
+    const bundleId = hexToBase64Url(payload?.bundleId || "");
+    const noteId = hexToBase64Url(payload?.noteId || "");
+    const timestamp = Number(payload?.timestamp || 0).toString(36);
+    return `RNP|E|${bundleId}.${noteId}.${timestamp}`;
+  }
   if (packetKind === "A" || packetKind === "NOTE_ACK") {
     const noteId = hexToBase64Url(payload?.noteId || "");
     const timestamp = Number(payload?.timestamp || 0).toString(36);
@@ -478,6 +484,18 @@ function decodeProtocolPacket(text) {
       }
     };
   }
+  if (kind === "E") {
+    const [bundleIdRaw, noteIdRaw, timestampRaw] = body.split(".");
+    if (!bundleIdRaw || !noteIdRaw || !timestampRaw) return null;
+    return {
+      kind,
+      payload: {
+        bundleId: base64UrlToHex(bundleIdRaw),
+        noteId: base64UrlToHex(noteIdRaw),
+        timestamp: Number.parseInt(timestampRaw, 36)
+      }
+    };
+  }
   if (kind === "B") {
     return { kind, payload: base64UrlDecodeObject(body) };
   }
@@ -496,6 +514,8 @@ function normalizePacketKind(kind) {
       return "NOTE";
     case "B":
       return "NOTE";
+    case "E":
+      return "NOTE_REDEEMED";
     case "A":
       return "NOTE_ACK";
     default:
@@ -698,6 +718,74 @@ function getPreparedInventorySummary() {
   };
 }
 
+async function syncCreatedNotesFromContract() {
+  if (!walletData?.address || !settings.rpcUrl || !settings.contractAddress || !ethers.isAddress(settings.contractAddress)) {
+    return;
+  }
+  const candidates = radioState.createdNotes.filter((entry) => {
+    const status = String(entry.status || "");
+    return !["redeemed", "canceled"].includes(status);
+  });
+  if (!candidates.length) {
+    return;
+  }
+  const provider = getProvider();
+  const vault = getVault(provider);
+  let changed = false;
+  for (const entry of candidates) {
+    const noteIds = Array.isArray(entry.noteIds) && entry.noteIds.length ? entry.noteIds : [entry.noteId];
+    const commitments = await Promise.all(noteIds.map(async (noteId) => {
+      try {
+        const commitment = await vault.commitments(noteId);
+        return {
+          noteId,
+          spent: Boolean(commitment?.spent),
+          canceled: Boolean(commitment?.canceled)
+        };
+      } catch {
+        return {
+          noteId,
+          spent: false,
+          canceled: false
+        };
+      }
+    }));
+    const spentIds = commitments.filter((item) => item.spent).map((item) => item.noteId);
+    const canceledIds = commitments.filter((item) => item.canceled).map((item) => item.noteId);
+    const prevRedeemedIds = Array.isArray(entry.redeemedNoteIds) ? entry.redeemedNoteIds : [];
+    const newRedeemedIds = spentIds.filter((noteId) => !prevRedeemedIds.includes(noteId));
+    if (newRedeemedIds.length) {
+      entry.redeemedNoteIds = [...prevRedeemedIds, ...newRedeemedIds];
+      entry.redeemedNoteCount = entry.redeemedNoteIds.length;
+      entry.lastRedeemedNoteId = newRedeemedIds[newRedeemedIds.length - 1];
+      entry.lastRedeemedAt = new Date().toISOString();
+      newRedeemedIds.forEach((noteId) => {
+        addActivity("note_redeemed", {
+          noteId,
+          bundleId: entry.bundleId || entry.noteId,
+          recipientNodeId: entry.recipientNodeId,
+          amountEth: entry.amountEth
+        });
+      });
+      changed = true;
+    }
+    if (canceledIds.length && entry.status !== "canceled") {
+      entry.status = "canceled";
+      entry.canceledAt = entry.canceledAt || new Date().toISOString();
+      changed = true;
+      continue;
+    }
+    if (spentIds.length >= noteIds.length && entry.status !== "redeemed") {
+      entry.status = "redeemed";
+      entry.redeemedAt = entry.redeemedAt || new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) {
+    persistRadioState();
+  }
+}
+
 async function getPublicState() {
   pruneInboundTransferState();
   const preparedSummary = getPreparedInventorySummary();
@@ -711,12 +799,16 @@ async function getPublicState() {
       updatedAt: transfer.updatedAt ? new Date(transfer.updatedAt).toISOString() : (transfer.startedAt ? new Date(transfer.startedAt).toISOString() : null)
     }))
     .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
+  const walletSummary = await getWalletSummary().catch((error) => ({
+    configured: Boolean(walletData?.address),
+    address: walletData?.address || null,
+    error: error.message
+  }));
+  if (walletSummary.rpcReachable) {
+    await syncCreatedNotesFromContract().catch(() => {});
+  }
   return {
-    wallet: await getWalletSummary().catch((error) => ({
-      configured: Boolean(walletData?.address),
-      address: walletData?.address || null,
-      error: error.message
-    })),
+    wallet: walletSummary,
     settings: getSafeSettings(),
     meshtastic: {
       ...meshtasticStatus,
@@ -1179,6 +1271,34 @@ function handleProtocolPacket(packet, senderNodeId) {
       recipientNodeId: entry.recipientNodeId,
       amountEth: entry.amountEth
     });
+    return;
+  }
+
+  if (kind === "NOTE_REDEEMED") {
+    const bundleId = String(packet.payload?.bundleId || "").trim();
+    const noteId = String(packet.payload?.noteId || "").trim();
+    const entry = findCreatedNoteEntry(bundleId || noteId);
+    if (!entry) return;
+    const redeemedIds = Array.isArray(entry.redeemedNoteIds) ? entry.redeemedNoteIds : [];
+    if (!redeemedIds.includes(noteId)) {
+      redeemedIds.push(noteId);
+    }
+    entry.redeemedNoteIds = redeemedIds;
+    entry.redeemedNoteCount = redeemedIds.length;
+    entry.lastRedeemedNoteId = noteId;
+    entry.lastRedeemedAt = new Date().toISOString();
+    const totalNotes = Array.isArray(entry.noteIds) && entry.noteIds.length ? entry.noteIds.length : 1;
+    entry.status = redeemedIds.length >= totalNotes ? "redeemed" : "delivered";
+    if (redeemedIds.length >= totalNotes) {
+      entry.redeemedAt = new Date().toISOString();
+    }
+    persistRadioState();
+    addActivity("note_redeemed", {
+      noteId: noteId || bundleId,
+      bundleId: entry.bundleId || entry.noteId,
+      recipientNodeId: entry.recipientNodeId,
+      amountEth: entry.amountEth
+    });
   }
 }
 
@@ -1187,6 +1307,21 @@ async function sendNoteAck(destinationNodeId, noteId) {
   const packet = encodeProtocolPacket("NOTE_ACK", {
     noteId,
     recipientNodeId: meshtasticStatus.localNodeId || null,
+    timestamp: Math.floor(Date.now() / 1000)
+  });
+  await sendProtocolPayload(destinationNodeId, packet, {
+    waitForAck: true,
+    retryOnAckTimeout: MESH_ACK_RETRY_COUNT,
+    ackTimeoutRetryDelayMs: MESH_ACK_RETRY_DELAY_MS,
+    batchDelayMs: MESH_VALUE_PACKET_DELAY_MS
+  });
+}
+
+async function sendRedeemAck(destinationNodeId, bundleId, noteId) {
+  if (!destinationNodeId || !bundleId || !noteId || !meshtasticStatus.connected) return;
+  const packet = encodeProtocolPacket("NOTE_REDEEMED", {
+    bundleId,
+    noteId,
     timestamp: Math.floor(Date.now() / 1000)
   });
   await sendProtocolPayload(destinationNodeId, packet, {
