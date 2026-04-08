@@ -729,6 +729,17 @@ body {
   line-height: 1.6;
 }
 
+.wallet-inline-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wallet-inline-hint .wallet-hint-link {
+  flex: 0 0 auto;
+}
+
 .wallet-home-copy p,
 .wallet-hint p {
   margin: 0;
