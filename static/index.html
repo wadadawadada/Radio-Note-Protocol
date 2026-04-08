@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radio Note Wallet</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/wallet-ui.css">
+  </head>
+  <body>
+    <main class="layout">
+      <header class="titlebar panel">
+        <div class="titlebar-text">RADIO<span style="color:var(--success)">NOTE</span> WALLET</div>
+        <div class="titlebar-actions">
+          <button id="refreshButton" type="button" class="titlebar-icon-button" aria-label="Refresh">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+          </button>
+          <button id="openWalletButton" type="button" class="titlebar-icon-button titlebar-wallet-button" aria-label="Open wallet">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18v10H3z"></path><circle cx="17" cy="12" r="1.5"></circle></svg>
+          </button>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <div class="left-column">
+          <article class="panel control-panel">
+            <div id="deviceStatus" class="device-status loading">
+              <span class="device-dot"></span>
+              <div class="device-status-labels">
+                <div id="deviceStatusTitle" class="device-status-title">Checking device</div>
+                <div id="deviceStatusText" class="device-status-text">Bridge startup</div>
+              </div>
+            </div>
+            <div id="portSwitcher" class="port-switcher hidden">
+              <label class="port-switcher-label" for="portSwitcherSelect">Meshtastic Port</label>
+              <div class="port-switcher-row">
+                <select id="portSwitcherSelect">
+                  <option value="">Auto detect</option>
+                </select>
+                <button id="portSwitcherConnectButton" type="button" class="wallet-inline-action wallet-inline-action-compact">Connect</button>
+              </div>
+              <div id="portSwitcherStatus" class="device-status-text"></div>
+            </div>
+            <div id="runtimeError" class="device-status-text device-status-text-error"></div>
+          </article>
+
+          <section class="panel nodes-panel">
+            <div class="panel-head">
+              <h2>Nodes</h2>
+              <span id="nodesOnlineCount" class="nodes-online-count"></span>
+            </div>
+            <div id="nodesList" class="nodes-list">
+              <div class="node-empty">No nodes yet</div>
+            </div>
+          </section>
+        </div>
+
+        <article class="panel hero-panel">
+          <div class="hero-kicker">Sepolia ETH over Meshtastic</div>
+          <h2 class="hero-title">Real ETH goes into the vault. Signed redemption notes move over radio.</h2>
+          <div class="hero-grid">
+            <div class="hero-card">
+              <span>Wallet</span>
+              <strong id="heroWalletAddress">Not configured</strong>
+            </div>
+            <div class="hero-card">
+              <span>On-chain</span>
+              <strong id="heroOnchain">-</strong>
+            </div>
+            <div class="hero-card">
+              <span>Vault Available</span>
+              <strong id="heroVaultAvailable">-</strong>
+            </div>
+            <div class="hero-card">
+              <span>Vault Reserved</span>
+              <strong id="heroVaultReserved">-</strong>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <button id="heroOpenWalletButton" type="button" class="wallet-create-btn">Open wallet</button>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <div id="walletModal" class="modal-shell hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close-wallet-modal></div>
+      <section class="modal-panel panel wallet-panel" role="dialog" aria-modal="true" aria-labelledby="walletModalTitle">
+        <div class="panel-head modal-head wallet-modal-header">
+          <div>
+            <div class="wallet-header-title-row">
+              <h2 id="walletModalTitle">RADIO NOTE WALLET</h2>
+            </div>
+          </div>
+          <button id="walletModalClose" type="button" class="modal-close" aria-label="Close wallet modal">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="1" y1="1" x2="11" y2="11"></line>
+              <line x1="11" y1="1" x2="1" y2="11"></line>
+            </svg>
+          </button>
+        </div>
+
+        <div class="wallet-modal-body">
+          <div class="wallet-status-row">
+            <div class="wallet-status-badge">
+              <span>Wallet engine</span>
+              <strong id="walletEngineStatus">Not configured</strong>
+            </div>
+            <div class="wallet-status-badge">
+              <span>Meshtastic</span>
+              <strong id="walletMeshtasticStatus">Disconnected</strong>
+            </div>
+          </div>
+
+          <div class="wallet-quick-actions wallet-toolbar" aria-label="Wallet toolbar">
+            <button type="button" class="wallet-quick-button is-active" data-wallet-view="home" aria-label="Home" title="Home"><svg viewBox="0 0 24 24"><path d="M4 10.5L12 4l8 6.5"></path><path d="M6 9.5V20h12V9.5"></path></svg><span>Home</span></button>
+            <button type="button" class="wallet-quick-button" data-wallet-view="receive" aria-label="Receive" title="Receive"><svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="M8 11l4 4 4-4"></path><path d="M3 19h18"></path></svg><span>Receive</span></button>
+            <button type="button" class="wallet-quick-button" data-wallet-view="send" aria-label="Send" title="Send"><svg viewBox="0 0 24 24"><path d="M12 21V9"></path><path d="M8 13l4-4 4 4"></path><path d="M3 5h18"></path></svg><span>Send</span></button>
+            <button type="button" class="wallet-quick-button" data-wallet-view="vault" aria-label="Vault" title="Vault"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"></path><path d="M9 9h6v6H9z"></path></svg><span>Vault</span></button>
+            <button type="button" class="wallet-quick-button" data-wallet-view="history" aria-label="Activity" title="Activity"><svg viewBox="0 0 24 24"><path d="M12 7v5l3 3"></path><circle cx="12" cy="12" r="9"></circle></svg><span>Activity</span></button>
+            <button type="button" class="wallet-quick-button" data-wallet-view="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2a1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.2a1 1 0 0 0-.6-.9a1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1a1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.2a1 1 0 0 0 .9-.6a1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2h.1a1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.2a1 1 0 0 0 .6.9a1 1 0 0 0 1.1-.2l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.2a1 1 0 0 0-.9.6z"></path></svg><span>Settings</span></button>
+          </div>
+
+          <div class="wallet-view-content">
+            <section id="walletPanelHome" class="wallet-view-panel is-active">
+              <div id="walletHomeSummary" class="wallet-summary-card" hidden>
+                <div class="wallet-summary-route">
+                  <span>Wallet Address</span>
+                  <div class="wallet-address-row">
+                    <div id="walletReceivePreview" class="wallet-route-preview">-</div>
+                    <button id="walletCopyAddressButton" type="button" class="wallet-icon-button" title="Copy address">
+                      <svg class="copy-icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                      <svg class="check-icon hidden" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"></path></svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="wallet-overview">
+                <div class="wallet-balance-card">
+                  <div class="wallet-balance-label">Vault Available ETH</div>
+                  <div class="wallet-balance-value-row">
+                    <div id="vaultAvailableBalanceValue" class="wallet-balance-value">-</div>
+                  </div>
+                  <div class="wallet-balance-sub-row">
+                    <span id="vaultAvailableSub" class="wallet-balance-sub">Ready to commit into radio notes</span>
+                    <button type="button" class="wallet-inline-action wallet-inline-action-compact" data-wallet-view="vault">Vault</button>
+                  </div>
+                </div>
+                <div class="wallet-balance-card wallet-balance-card-secondary">
+                  <div class="wallet-balance-label">On-chain ETH</div>
+                  <div id="onchainBalanceValue" class="wallet-balance-value wallet-balance-secondary">-</div>
+                  <div class="wallet-balance-sub-row">
+                    <span id="walletBalanceSub" class="wallet-balance-sub">Local EVM wallet balance</span>
+                  </div>
+                </div>
+              </div>
+
+              <div id="walletHomeNoWallet" class="wallet-create-block">
+                <div class="wallet-home-copy">
+                  <p>No local wallet yet. Create one in Settings to generate a receive address and sign radio notes.</p>
+                </div>
+                <button id="walletHomeCreateButton" type="button" class="wallet-inline-action wallet-create-btn">Create wallet</button>
+              </div>
+            </section>
+
+            <section id="walletPanelReceive" class="wallet-view-panel" hidden>
+              <div class="wallet-screen-head"><div><h3>Receive</h3></div></div>
+              <div class="wallet-receive-tabs">
+                <button id="receiveWalletTab" type="button" class="wallet-receive-tab is-active">Wallet</button>
+                <button id="receiveNotesTab" type="button" class="wallet-receive-tab">Radio Notes</button>
+              </div>
+              <div id="receiveWalletPanel">
+                <div id="walletReceiveNoWallet" class="wallet-no-wallet-notice">
+                  <p>No wallet created yet.</p>
+                  <button type="button" class="wallet-inline-action" data-wallet-view="settings">Go to Settings</button>
+                </div>
+                <div id="walletReceiveContent" hidden>
+                  <div class="wallet-section-divider">Receive on-chain</div>
+                  <div class="modal-section wallet-section">
+                    <div class="modal-label">Wallet Address</div>
+                    <div class="wallet-inline-row">
+                      <input id="walletReceiveId" type="text" readonly value="">
+                      <button id="walletCopyReceiveIdButton" type="button" class="wallet-icon-button" title="Copy address">
+                        <svg class="copy-icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        <svg class="check-icon hidden" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"></path></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="wallet-qr-block">
+                    <div class="wallet-qr-container">
+                      <div id="walletQrLoading" class="wallet-qr-loading">Loading QR...</div>
+                      <img id="walletQrImage" class="wallet-qr-img" alt="ETH wallet QR" hidden>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="receiveNotesPanel" class="hidden">
+                <div class="wallet-section-divider">Received radio notes</div>
+                <div id="receivedNotesList" class="card-list wallet-card-list"></div>
+              </div>
+            </section>
+
+            <section id="walletPanelSend" class="wallet-view-panel" hidden>
+              <div class="wallet-screen-head"><div><h3>Send</h3></div></div>
+              <div class="wallet-receive-tabs">
+                <button id="sendNotesTab" type="button" class="wallet-receive-tab is-active">Radio Note</button>
+                <button id="sendWalletTab" type="button" class="wallet-receive-tab">On-chain</button>
+              </div>
+              <div id="sendNotesPanel">
+                <div class="wallet-section-divider">Send off-grid proof</div>
+                <div class="wallet-balance-pill"><span>Spendable from vault:</span> <strong id="sendVaultAvailable">-</strong></div>
+                <form id="walletSendForm" class="wallet-form-grid">
+                  <label class="wallet-field" for="walletRecipientInput">
+                    <span>Recipient node</span>
+                    <div class="wallet-inline-row wallet-inline-row-compact">
+                      <select id="walletRecipientInput"><option value="">Select node</option></select>
+                      <button id="walletCheckRecipientButton" type="button" class="wallet-inline-action wallet-inline-action-compact">Check</button>
+                    </div>
+                  </label>
+                  <div id="walletRecipientStatus" class="device-status-text wallet-field-wide">Pick a node and run Check before sending.</div>
+                  <label class="wallet-field" for="walletAmountInput"><span>Amount ETH</span><input id="walletAmountInput" type="text" placeholder="0.005"></label>
+                  <label class="wallet-field" for="walletExpiryInput"><span>Expiry mins</span><input id="walletExpiryInput" type="number" min="5" value="60"></label>
+                  <label class="wallet-field wallet-field-wide" for="walletMemoInput"><span>Memo</span><input id="walletMemoInput" type="text" placeholder="optional"></label>
+                  <div class="wallet-form-actions wallet-field-wide">
+                    <button id="walletSendSubmitButton" type="submit">Commit + send</button>
+                    <div id="walletSendStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </div>
+                </form>
+                <div id="createdNotesList" class="card-list wallet-card-list"></div>
+              </div>
+              <div id="sendWalletPanel" hidden>
+                <div class="wallet-section-divider">Send on-chain ETH</div>
+                <div class="wallet-balance-pill"><span>On-chain:</span> <strong id="sendOnchainBalance">-</strong></div>
+                <form id="sendOnchainForm" class="wallet-form-grid">
+                  <label class="wallet-field wallet-field-wide" for="sendAddressInput"><span>Recipient address</span><input id="sendAddressInput" type="text" placeholder="0x..."></label>
+                  <label class="wallet-field" for="sendAmountInput"><span>Amount ETH</span><input id="sendAmountInput" type="text" placeholder="0.01"></label>
+                  <div class="wallet-form-actions wallet-field-wide">
+                    <button type="submit">Send ETH</button>
+                    <div id="sendStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section id="walletPanelVault" class="wallet-view-panel" hidden>
+              <div class="wallet-screen-head"><div><h3>Vault</h3><div class="wallet-home-subtitle">Lock ETH for radio-note commitments</div></div></div>
+              <div class="wallet-fund-card">
+                <div class="modal-label">Vault balances</div>
+                <div class="wallet-balance-pill"><span>Available</span><strong id="vaultPanelAvailable">-</strong></div>
+                <div class="wallet-balance-pill"><span>Reserved</span><strong id="vaultPanelReserved">-</strong></div>
+              </div>
+              <div class="wallet-fund-card">
+                <div class="modal-label">Deposit ETH</div>
+                <form id="depositForm" class="wallet-form-grid">
+                  <label class="wallet-field" for="depositAmountInput"><span>Amount ETH</span><input id="depositAmountInput" type="text" placeholder="0.05"></label>
+                  <div class="wallet-form-actions wallet-field-wide">
+                    <button type="submit">Deposit to vault</button>
+                    <div id="depositStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </div>
+                </form>
+              </div>
+              <div class="wallet-fund-card">
+                <div class="modal-label">Withdraw available ETH</div>
+                <form id="withdrawForm" class="wallet-form-grid">
+                  <label class="wallet-field" for="withdrawAmountInput"><span>Amount ETH</span><input id="withdrawAmountInput" type="text" placeholder="0.01"></label>
+                  <div class="wallet-form-actions wallet-field-wide">
+                    <button type="submit">Withdraw from vault</button>
+                    <div id="withdrawStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section id="walletPanelHistory" class="wallet-view-panel" hidden>
+              <div class="wallet-screen-head"><div><h3>Activity</h3><div class="wallet-home-subtitle">On-chain, vault, announcement, and radio-note events</div></div></div>
+              <div class="wallet-history-shell">
+                <table class="wallet-history-table">
+                  <thead><tr><th>Type</th><th>Details</th><th>Time</th></tr></thead>
+                  <tbody id="walletHistoryBody"></tbody>
+                </table>
+                <div id="walletHistoryEmpty" class="node-empty">No wallet activity yet</div>
+              </div>
+            </section>
+
+            <section id="walletPanelSettings" class="wallet-view-panel" hidden>
+              <div class="wallet-screen-head"><div><h3>Settings</h3></div></div>
+              <div class="modal-section wallet-section">
+                <div class="modal-label">Runtime</div>
+                <form id="settingsForm" class="wallet-form-grid">
+                  <label class="wallet-field wallet-field-wide" for="rpcUrlInput"><span>Sepolia RPC URL</span><input id="rpcUrlInput" type="text" placeholder="https://ethereum-sepolia-rpc.publicnode.com"></label>
+                  <label class="wallet-field wallet-field-wide" for="contractAddressInput"><span>Vault contract</span><input id="contractAddressInput" type="text" placeholder="0x..."></label>
+                  <label class="wallet-field wallet-field-wide" for="meshtasticPortInput"><span>Meshtastic USB port</span><input id="meshtasticPortInput" type="text" placeholder="COM7 or blank for auto"></label>
+                  <div class="wallet-form-actions wallet-field-wide">
+                    <button type="submit">Save settings</button>
+                    <div id="settingsStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </div>
+                </form>
+              </div>
+              <div id="walletCreateBlock" class="wallet-create-block">
+                <div class="modal-label">Create new wallet</div>
+                <div class="wallet-home-copy" style="margin-bottom:6px">
+                  <p>Generates a local EVM wallet for Sepolia and note signing.</p>
+                  <p>The 12-word seed is shown once after creation.</p>
+                </div>
+                <div class="wallet-form-actions">
+                  <button id="walletInitButton" type="button" class="wallet-create-btn">Create wallet</button>
+                  <div id="walletSettingsStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                </div>
+              </div>
+              <div id="walletInfoBlock" class="hidden">
+                <div class="modal-section wallet-section"><div class="modal-label">Wallet info</div><div id="walletInfoKv" class="wallet-kv-block"></div></div>
+                <div class="modal-section wallet-section" style="margin-top:4px">
+                  <div class="wallet-seed-header">
+                    <span class="modal-label">Seed phrase</span>
+                    <button id="walletShowSeedButton" type="button" class="wallet-icon-button wallet-seed-toggle" title="Show seed phrase">
+                      <svg id="walletSeedEyeIcon" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                      <svg id="walletSeedEyeOffIcon" viewBox="0 0 24 24" class="hidden"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                    </button>
+                  </div>
+                  <div id="walletSeedRevealGrid" class="wallet-mnemonic-grid hidden" style="margin-top:6px"></div>
+                </div>
+                <div class="wallet-form-actions" style="margin-top:8px"><button id="walletResetButton" type="button" class="wallet-danger-btn">Delete wallet</button></div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div id="walletMnemonicBlock" class="wallet-mnemonic-block hidden">
+          <div class="modal-label wallet-mnemonic-warning">Save your seed phrase</div>
+          <div class="wallet-hint">Write these 12 words down offline. Anyone with this phrase controls your funds.</div>
+          <div id="walletMnemonicGrid" class="wallet-mnemonic-grid"></div>
+          <div class="wallet-form-actions" style="margin-top:6px"><button id="walletMnemonicDoneButton" type="button">I saved it</button></div>
+        </div>
+      </section>
+    </div>
+
+    <script src="/wallet-ui.js"></script>
+  </body>
+</html>

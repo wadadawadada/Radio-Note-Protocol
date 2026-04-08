@@ -1,0 +1,23 @@
+{
+  "name": "radio-note-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sepolia ETH wallet with Meshtastic radio-note transfers.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "contract:compile": "node scripts/compile.js",
+    "contract:deploy": "node scripts/deploy.js"
+  },
+  "dependencies": {
+    "ethers": "^6.13.5",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "@openzeppelin/contracts": "^5.2.0",
+    "fp-ts": "^2.16.11",
+    "hardhat": "^2.22.18",
+    "solc": "^0.8.34"
+  }
+}
