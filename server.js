@@ -13,12 +13,20 @@ const DATA_DIR = path.join(ROOT, "data");
 const WALLET_FILE = path.join(DATA_DIR, "wallet.json");
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 const STATE_FILE = path.join(DATA_DIR, "radio_state.json");
+const LOGS_FILE = path.join(DATA_DIR, "logs.json");
+const WALLET_SUMMARY_FILE = path.join(DATA_DIR, "wallet_summary.json");
 const BRIDGE_PATH = path.join(ROOT, "bridge.py");
 const PORT = Number(process.env.PORT || 7861);
 const SEPOLIA_CHAIN_ID = 11155111;
 const MESH_PACKET_MAX_BYTES = 180;
-const MESH_PACKET_DELAY_MS = 450;
+const MESH_PACKET_DELAY_MS = 1800;
+const MESH_VALUE_PACKET_DELAY_MS = 3200;
 const HANDSHAKE_READY_MS = 15 * 60 * 1000;
+const HANDSHAKE_REPLY_TIMEOUT_MS = 20_000;
+const MESH_ACK_RETRY_COUNT = 1;
+const MESH_ACK_RETRY_DELAY_MS = 1800;
+const MAX_PROTOCOL_LOGS = 600;
+const DEFAULT_PREPARE_EXPIRY_DAYS = 7;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -31,12 +39,12 @@ const MIME_TYPES = {
 const VAULT_ABI = [
   "function deposit() payable",
   "function withdrawAvailable(uint256 amount)",
-  "function commitNote(bytes32 noteId, address recipient, uint256 amount, uint64 expiry)",
+  "function prepareNote(bytes32 noteId, uint256 amount, uint64 expiry)",
   "function cancelExpiredNote(bytes32 noteId)",
   "function redeem((address issuer,address recipient,uint256 amount,bytes32 noteId,uint64 expiry,address contractAddress,uint256 chainId) note, bytes signature)",
   "function availableBalance(address issuer) view returns (uint256)",
   "function reservedBalance(address issuer) view returns (uint256)",
-  "function commitments(bytes32 noteId) view returns (address issuer, address recipient, uint256 amount, uint64 expiry, bool spent, bool canceled)"
+  "function commitments(bytes32 noteId) view returns (address issuer, uint256 amount, uint64 expiry, bool spent, bool canceled)"
 ];
 
 const NOTE_TYPES = {
@@ -71,6 +79,7 @@ const DEFAULT_SETTINGS = {
 const DEFAULT_RADIO_STATE = {
   announcements: {},
   handshakes: {},
+  preparedNotes: [],
   createdNotes: [],
   receivedNotes: [],
   activity: [],
@@ -80,6 +89,7 @@ const DEFAULT_RADIO_STATE = {
 let settings = null;
 let walletData = null;
 let radioState = null;
+let protocolLogs = [];
 let lastSeenPorts = [];
 let meshNodes = [];
 let meshtasticStatus = {
@@ -95,6 +105,10 @@ let bridgeRefreshTimer = null;
 let providerCache = null;
 let providerCacheUrl = "";
 const inboundTransfers = new Map();
+const completedInboundTransfers = new Map();
+let meshSendQueue = Promise.resolve();
+const INBOUND_TRANSFER_TTL_MS = 3 * 60 * 1000;
+const COMPLETED_TRANSFER_TTL_MS = 5 * 60 * 1000;
 
 function isPlaceholderRpcUrl(value) {
   const text = String(value || "").trim();
@@ -133,14 +147,17 @@ function bootstrap() {
     ...DEFAULT_RADIO_STATE,
     ...loadJsonSafe(STATE_FILE, {})
   };
+  protocolLogs = Array.isArray(loadJsonSafe(LOGS_FILE, [])) ? loadJsonSafe(LOGS_FILE, []) : [];
   radioState.announcements = radioState.announcements || {};
   radioState.handshakes = radioState.handshakes || {};
+  radioState.preparedNotes = Array.isArray(radioState.preparedNotes) ? radioState.preparedNotes : [];
   radioState.createdNotes = Array.isArray(radioState.createdNotes) ? radioState.createdNotes : [];
   radioState.receivedNotes = Array.isArray(radioState.receivedNotes) ? radioState.receivedNotes : [];
   radioState.activity = Array.isArray(radioState.activity) ? radioState.activity : [];
   radioState.messages = Array.isArray(radioState.messages) ? radioState.messages : [];
   persistSettings();
   persistRadioState();
+  persistProtocolLogs();
   startBridge();
 }
 
@@ -191,6 +208,29 @@ function persistRadioState() {
   writeJson(STATE_FILE, radioState);
 }
 
+function persistProtocolLogs() {
+  writeJson(LOGS_FILE, protocolLogs);
+}
+
+function loadCachedWalletSummary() {
+  return loadJsonSafe(WALLET_SUMMARY_FILE, null);
+}
+
+function persistWalletSummary(summary) {
+  writeJson(WALLET_SUMMARY_FILE, summary);
+}
+
+function addProtocolLog(type, payload = {}) {
+  protocolLogs.unshift({
+    id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    timestamp: new Date().toISOString(),
+    ...payload
+  });
+  protocolLogs = protocolLogs.slice(0, MAX_PROTOCOL_LOGS);
+  persistProtocolLogs();
+}
+
 function addActivity(type, payload = {}) {
   radioState.activity.unshift({
     id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -237,7 +277,11 @@ function getLocalWallet() {
   return new ethers.Wallet(walletData.privateKey);
 }
 
-function getSigner() {
+function getOfflineSigner() {
+  return getLocalWallet();
+}
+
+function getConnectedSigner() {
   return getLocalWallet().connect(getProvider());
 }
 
@@ -295,6 +339,16 @@ function formatEtherValue(value) {
   }
 }
 
+function sumWeiValues(values = []) {
+  return values.reduce((total, value) => {
+    try {
+      return total + BigInt(value || 0);
+    } catch {
+      return total;
+    }
+  }, 0n);
+}
+
 function randomNoteId() {
   return `0x${crypto.randomBytes(32).toString("hex")}`;
 }
@@ -311,14 +365,142 @@ function base64UrlDecodeObject(value) {
   return JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
 }
 
+function hexToBase64Url(value) {
+  const hex = String(value || "").trim().replace(/^0x/i, "");
+  if (!hex) return "";
+  return Buffer.from(hex, "hex").toString("base64url");
+}
+
+function base64UrlToHex(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return `0x${Buffer.from(text, "base64url").toString("hex")}`;
+}
+
+function base36ToBigInt(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return 0n;
+  let result = 0n;
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    let digit = -1;
+    if (code >= 48 && code <= 57) digit = code - 48;
+    else if (code >= 97 && code <= 122) digit = code - 87;
+    if (digit < 0 || digit >= 36) throw new Error("Invalid base36 value");
+    result = result * 36n + BigInt(digit);
+  }
+  return result;
+}
+
 function encodeProtocolPacket(kind, payload) {
-  return `RNP|${kind}|${base64UrlEncodeObject(payload)}`;
+  const packetKind = String(kind || "").trim().toUpperCase();
+  if (packetKind === "H") {
+    return `RNP|H|${String(payload?.r || payload?.requestId || "").trim()}`;
+  }
+  if (packetKind === "R") {
+    const address = String(payload?.a || payload?.walletAddress || "").trim().replace(/^0x/i, "").toLowerCase();
+    const timestamp = Number(payload?.t || payload?.timestamp || 0);
+    const signature = hexToBase64Url(payload?.s || payload?.signature || "");
+    const requestId = String(payload?.r || payload?.requestId || "").trim();
+    return `RNP|R|${address}.${timestamp.toString(36)}.${signature}.${requestId}`;
+  }
+  if (packetKind === "N" || packetKind === "NOTE") {
+    const note = payload?.note || {};
+    const issuer = String(note.issuer || "").trim().replace(/^0x/i, "").toLowerCase();
+    const recipient = String(note.recipient || "").trim().replace(/^0x/i, "").toLowerCase();
+    const amount = BigInt(String(note.amount || "0")).toString(36);
+    const noteId = hexToBase64Url(note.noteId || "");
+    const expiry = Number(note.expiry || 0).toString(36);
+    const signature = hexToBase64Url(payload?.signature || "");
+    const memo = Buffer.from(String(payload?.memo || ""), "utf8").toString("base64url");
+    return `RNP|N|${issuer}.${recipient}.${amount}.${noteId}.${expiry}.${signature}.${memo}`;
+  }
+  if (packetKind === "B" || packetKind === "NOTE_BUNDLE") {
+    return `RNP|B|${base64UrlEncodeObject(payload)}`;
+  }
+  if (packetKind === "A" || packetKind === "NOTE_ACK") {
+    const noteId = hexToBase64Url(payload?.noteId || "");
+    const timestamp = Number(payload?.timestamp || 0).toString(36);
+    return `RNP|A|${noteId}.${timestamp}`;
+  }
+  return `RNP|${packetKind}|${base64UrlEncodeObject(payload)}`;
 }
 
 function decodeProtocolPacket(text) {
-  const match = /^RNP\|([A-Z]+)\|([A-Za-z0-9\-_]+)$/.exec(String(text || "").trim());
+  const match = /^RNP\|([A-Z]+)\|(.+)$/.exec(String(text || "").trim());
   if (!match) return null;
-  return { kind: match[1], payload: base64UrlDecodeObject(match[2]) };
+  const kind = String(match[1] || "").trim().toUpperCase();
+  const body = String(match[2] || "").trim();
+  if (kind === "H") {
+    return { kind, payload: { r: body } };
+  }
+  if (kind === "R") {
+    const [addressRaw, timestampRaw, signatureRaw, requestIdRaw = ""] = body.split(".");
+    if (!addressRaw || !timestampRaw || !signatureRaw) return null;
+    return {
+      kind,
+      payload: {
+        a: `0x${addressRaw}`,
+        t: Number.parseInt(timestampRaw, 36),
+        s: base64UrlToHex(signatureRaw),
+        r: requestIdRaw
+      }
+    };
+  }
+  if (kind === "N") {
+    const [issuerRaw, recipientRaw, amountRaw, noteIdRaw, expiryRaw, signatureRaw, memoRaw = ""] = body.split(".");
+    if (!issuerRaw || !recipientRaw || !amountRaw || !noteIdRaw || !expiryRaw || !signatureRaw) return null;
+    return {
+      kind,
+      payload: {
+        note: {
+          issuer: `0x${issuerRaw}`,
+          recipient: `0x${recipientRaw}`,
+          amount: base36ToBigInt(amountRaw).toString(),
+          noteId: base64UrlToHex(noteIdRaw),
+          expiry: Number.parseInt(expiryRaw, 36),
+          contractAddress: settings.contractAddress || ethers.ZeroAddress,
+          chainId: SEPOLIA_CHAIN_ID
+        },
+        signature: base64UrlToHex(signatureRaw),
+        memo: memoRaw ? Buffer.from(memoRaw, "base64url").toString("utf8") : ""
+      }
+    };
+  }
+  if (kind === "A") {
+    const [noteIdRaw, timestampRaw] = body.split(".");
+    if (!noteIdRaw || !timestampRaw) return null;
+    return {
+      kind,
+      payload: {
+        noteId: base64UrlToHex(noteIdRaw),
+        timestamp: Number.parseInt(timestampRaw, 36)
+      }
+    };
+  }
+  if (kind === "B") {
+    return { kind, payload: base64UrlDecodeObject(body) };
+  }
+  return { kind, payload: base64UrlDecodeObject(body) };
+}
+
+function normalizePacketKind(kind) {
+  switch (String(kind || "").trim().toUpperCase()) {
+    case "AN":
+      return "ANN";
+    case "H":
+      return "HELLO";
+    case "R":
+      return "READY";
+    case "N":
+      return "NOTE";
+    case "B":
+      return "NOTE";
+    case "A":
+      return "NOTE_ACK";
+    default:
+      return String(kind || "").trim().toUpperCase();
+  }
 }
 
 function takeUtf8Prefix(text, maxBytes) {
@@ -411,23 +593,62 @@ async function getWalletSummary() {
     chainId: SEPOLIA_CHAIN_ID,
     onchainBalanceEth: null,
     availableLockedEth: null,
-    reservedLockedEth: null
+    reservedLockedEth: null,
+    rpcReachable: false,
+    balancesStale: false,
+    cachedAt: null,
+    error: null
   };
   if (!summary.configured || !settings.rpcUrl) {
     return summary;
   }
-  const provider = getProvider();
-  const onchain = await provider.getBalance(walletData.address);
-  summary.onchainBalanceEth = ethers.formatEther(onchain);
+  try {
+    const provider = getProvider();
+    const onchain = await provider.getBalance(walletData.address);
+    summary.onchainBalanceEth = ethers.formatEther(onchain);
 
-  if (settings.contractAddress && ethers.isAddress(settings.contractAddress)) {
-    const vault = getVault(provider);
-    const [available, reserved] = await Promise.all([
-      vault.availableBalance(walletData.address),
-      vault.reservedBalance(walletData.address)
-    ]);
-    summary.availableLockedEth = ethers.formatEther(available);
-    summary.reservedLockedEth = ethers.formatEther(reserved);
+    if (settings.contractAddress && ethers.isAddress(settings.contractAddress)) {
+      const vault = getVault(provider);
+      const [available, reserved] = await Promise.all([
+        vault.availableBalance(walletData.address),
+        vault.reservedBalance(walletData.address)
+      ]);
+      summary.availableLockedEth = ethers.formatEther(available);
+      summary.reservedLockedEth = ethers.formatEther(reserved);
+    }
+    summary.rpcReachable = true;
+    summary.cachedAt = new Date().toISOString();
+      persistWalletSummary({
+        address: summary.address,
+        chainId: summary.chainId,
+        contractAddress: settings.contractAddress || "",
+        onchainBalanceEth: summary.onchainBalanceEth,
+        availableLockedEth: summary.availableLockedEth,
+        reservedLockedEth: summary.reservedLockedEth,
+        cachedAt: summary.cachedAt
+      });
+  } catch (error) {
+    const cached = loadCachedWalletSummary();
+    if (
+      cached &&
+      cached.address &&
+      String(cached.address).toLowerCase() === String(summary.address || "").toLowerCase() &&
+      String(cached.contractAddress || "") === String(settings.contractAddress || "")
+    ) {
+      summary.onchainBalanceEth = cached.onchainBalanceEth ?? null;
+      summary.availableLockedEth = cached.availableLockedEth ?? null;
+      summary.reservedLockedEth = cached.reservedLockedEth ?? null;
+      summary.cachedAt = cached.cachedAt || null;
+      summary.balancesStale = true;
+      summary.error = null;
+      addProtocolLog("wallet_summary_offline_cache_used", {
+        address: summary.address,
+        message: error.message || "rpc unavailable",
+        cachedAt: summary.cachedAt
+      });
+      return summary;
+    }
+    summary.error = error.message;
   }
   return summary;
 }
@@ -441,7 +662,55 @@ function getSafeSettings() {
   };
 }
 
+function refreshPreparedNotesState() {
+  const now = Math.floor(Date.now() / 1000);
+  let changed = false;
+  for (const note of radioState.preparedNotes) {
+    if (note.status === "ready" && Number(note.expiry || 0) <= now) {
+      note.status = "expired";
+      note.expiredAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) persistRadioState();
+}
+
+function getPreparedReadyNotes() {
+  refreshPreparedNotesState();
+  return radioState.preparedNotes
+    .filter((note) => note.status === "ready")
+    .sort((a, b) => Number(a.expiry || 0) - Number(b.expiry || 0));
+}
+
+function getPreparedInventorySummary() {
+  const readyNotes = getPreparedReadyNotes();
+  const spendableWei = readyNotes.reduce((sum, note) => {
+    try {
+      return sum + BigInt(note.amountWei || "0");
+    } catch {
+      return sum;
+    }
+  }, 0n);
+  return {
+    spendableWei: spendableWei.toString(),
+    spendableEth: formatEtherValue(spendableWei),
+    readyCount: readyNotes.length
+  };
+}
+
 async function getPublicState() {
+  pruneInboundTransferState();
+  const preparedSummary = getPreparedInventorySummary();
+  const incomingTransfers = Array.from(inboundTransfers.values())
+    .map((transfer) => ({
+      senderNodeId: transfer.sender || null,
+      transferId: transfer.transferId,
+      totalChunks: Number(transfer.total || 0),
+      receivedChunks: transfer.parts instanceof Map ? transfer.parts.size : 0,
+      startedAt: transfer.startedAt ? new Date(transfer.startedAt).toISOString() : null,
+      updatedAt: transfer.updatedAt ? new Date(transfer.updatedAt).toISOString() : (transfer.startedAt ? new Date(transfer.startedAt).toISOString() : null)
+    }))
+    .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
   return {
     wallet: await getWalletSummary().catch((error) => ({
       configured: Boolean(walletData?.address),
@@ -454,11 +723,29 @@ async function getPublicState() {
       ports: lastSeenPorts
     },
     nodes: mergeNodeViews(),
+    preparedSummary,
+    preparedNotes: radioState.preparedNotes,
+    incomingTransfers,
     createdNotes: radioState.createdNotes,
     receivedNotes: radioState.receivedNotes,
     activity: radioState.activity.slice(0, 80),
     messages: radioState.messages.slice(0, 80)
   };
+}
+
+function pruneInboundTransferState() {
+  const now = Date.now();
+  for (const [key, transfer] of inboundTransfers.entries()) {
+    const updatedAt = Number(transfer.updatedAt || transfer.startedAt || 0);
+    if (updatedAt && now - updatedAt > INBOUND_TRANSFER_TTL_MS) {
+      inboundTransfers.delete(key);
+    }
+  }
+  for (const [key, completedAt] of completedInboundTransfers.entries()) {
+    if (!completedAt || now - Number(completedAt) > COMPLETED_TRANSFER_TTL_MS) {
+      completedInboundTransfers.delete(key);
+    }
+  }
 }
 
 function inferPythonCommand() {
@@ -617,6 +904,15 @@ function handleBridgeEvent(line) {
         meshNodes = Array.isArray(event.nodes) ? event.nodes : [];
         break;
       case "message":
+        if (String(event.text || "").includes("RNP") || /^\[[a-f0-9]{8}:\d+\/\d+\]/i.test(String(event.text || ""))) {
+          addProtocolLog("bridge_message", {
+            sender: event.sender || null,
+            recipient: event.recipient || null,
+            isDirectMessage: Boolean(event.isDirectMessage),
+            textPreview: String(event.text || "").slice(0, 180),
+            textLength: String(event.text || "").length
+          });
+        }
         addMessage({
           direction: "in",
           sender: event.sender,
@@ -630,13 +926,38 @@ function handleBridgeEvent(line) {
         handleInboundMeshMessage(event);
         break;
       case "sent":
-        updateMessageAck(event.clientMsgId, "sent");
+        if (String(event.text || "").includes("RNP") || /^\[[a-f0-9]{8}:\d+\/\d+\]/i.test(String(event.text || ""))) {
+          addProtocolLog("bridge_sent", {
+            destinationId: event.destinationId || null,
+            clientMsgId: event.clientMsgId || null,
+            acked: event.acked ?? null,
+            attempts: event.attempts ?? null,
+            textPreview: String(event.text || "").slice(0, 180),
+            textLength: String(event.text || "").length
+          });
+        }
+        updateMessageAck(
+          event.clientMsgId,
+          event.acked === false ? "timeout" : event.acked ? "acked" : "sent"
+        );
         break;
       case "error":
-        meshtasticStatus = {
-          ...meshtasticStatus,
-          error: event.message || "Unknown bridge error"
-        };
+        addProtocolLog("bridge_error", {
+          clientMsgId: event.clientMsgId || null,
+          destinationId: event.destinationId || null,
+          message: event.message || "Unknown bridge error",
+          attempts: event.attempts ?? null,
+          textPreview: String(event.text || "").slice(0, 180)
+        });
+        if (event.clientMsgId) {
+          updateMessageAck(event.clientMsgId, "failed");
+        }
+        if (!String(event.message || "").toLowerCase().includes("ack timeout")) {
+          meshtasticStatus = {
+            ...meshtasticStatus,
+            error: event.message || "Unknown bridge error"
+          };
+        }
         break;
       default:
         break;
@@ -650,19 +971,43 @@ function handleBridgeEvent(line) {
 }
 
 function handleInboundMeshMessage(event) {
+  pruneInboundTransferState();
   const text = String(event.text || "").trim();
   if (!text) return;
 
   const directPacket = decodeProtocolPacket(text);
   if (directPacket) {
+    addProtocolLog("packet_direct", {
+      sender: event.sender || null,
+      recipient: event.recipient || null,
+      kind: normalizePacketKind(directPacket.kind),
+      rawKind: directPacket.kind,
+      textLength: text.length
+    });
     handleProtocolPacket(directPacket, event.sender);
     return;
   }
 
   const part = parseMeshPart(text);
   if (!part) return;
+  addProtocolLog("packet_chunk", {
+    sender: event.sender || null,
+    transferId: part.transferId,
+    partNum: part.partNum,
+    total: part.total,
+    chunkLength: String(part.content || "").length
+  });
 
   const key = `${event.sender}:${part.transferId}`;
+  if (completedInboundTransfers.has(key)) {
+    addProtocolLog("packet_chunk_ignored_completed", {
+      sender: event.sender || null,
+      transferId: part.transferId,
+      partNum: part.partNum,
+      total: part.total
+    });
+    return;
+  }
   const current = inboundTransfers.get(key) || {
     sender: event.sender,
     transferId: part.transferId,
@@ -671,6 +1016,7 @@ function handleInboundMeshMessage(event) {
     startedAt: Date.now()
   };
   current.total = part.total;
+  current.updatedAt = Date.now();
   if (!current.parts.has(part.partNum)) {
     current.parts.set(part.partNum, part.content);
   }
@@ -681,7 +1027,22 @@ function handleInboundMeshMessage(event) {
     inboundTransfers.delete(key);
     const packet = decodeProtocolPacket(assembled);
     if (packet) {
+      completedInboundTransfers.set(key, Date.now());
+      addProtocolLog("packet_assembled", {
+        sender: event.sender || null,
+        transferId: part.transferId,
+        kind: normalizePacketKind(packet.kind),
+        rawKind: packet.kind,
+        textLength: assembled.length
+      });
       handleProtocolPacket(packet, event.sender);
+    } else {
+      addProtocolLog("packet_decode_failed", {
+        sender: event.sender || null,
+        transferId: part.transferId,
+        textPreview: assembled.slice(0, 180),
+        textLength: assembled.length
+      });
     }
   }
 }
@@ -704,8 +1065,21 @@ function markHandshake(nodeId, patch) {
   persistRadioState();
 }
 
+function findCreatedNoteEntry(noteRef) {
+  const normalized = String(noteRef || "").trim();
+  if (!normalized) return null;
+  return radioState.createdNotes.find((note) => note.noteId === normalized || note.bundleId === normalized) || null;
+}
+
 function handleProtocolPacket(packet, senderNodeId) {
-  if (packet.kind === "ANN") {
+  const kind = normalizePacketKind(packet.kind);
+  addProtocolLog("packet_dispatch", {
+    senderNodeId: senderNodeId || null,
+    kind,
+    rawKind: packet.kind
+  });
+
+  if (kind === "ANN") {
     const normalized = normalizeAnnouncement(packet.payload, senderNodeId);
     if (normalized) {
       upsertAnnouncement(normalized);
@@ -717,8 +1091,16 @@ function handleProtocolPacket(packet, senderNodeId) {
     return;
   }
 
-  if (packet.kind === "HELLO") {
+  if (kind === "HELLO") {
+    addProtocolLog("handshake_hello_received", {
+      senderNodeId: senderNodeId || null,
+      requestId: String(packet.payload?.requestId || packet.payload?.r || "")
+    });
     respondToHandshake(senderNodeId, packet.payload).catch((error) => {
+      addProtocolLog("handshake_reply_failed", {
+        nodeId: senderNodeId || null,
+        message: error.message
+      });
       addActivity("handshake_reply_failed", {
         nodeId: senderNodeId,
         error: error.message
@@ -727,7 +1109,7 @@ function handleProtocolPacket(packet, senderNodeId) {
     return;
   }
 
-  if (packet.kind === "READY") {
+  if (kind === "READY") {
     const normalized = normalizeAnnouncement(packet.payload, senderNodeId);
     if (normalized) {
       upsertAnnouncement(normalized);
@@ -738,6 +1120,11 @@ function handleProtocolPacket(packet, senderNodeId) {
         status: normalized.verified ? "ready" : "invalid_signature",
         error: normalized.verified ? null : "Invalid wallet signature"
       });
+      addProtocolLog("handshake_ready", {
+        nodeId: normalized.nodeId,
+        walletAddress: normalized.walletAddress,
+        verified: Boolean(normalized.verified)
+      });
       addActivity("handshake_ready", {
         nodeId: normalized.nodeId,
         walletAddress: normalized.walletAddress
@@ -746,26 +1133,29 @@ function handleProtocolPacket(packet, senderNodeId) {
     return;
   }
 
-  if (packet.kind === "NOTE") {
-    const normalized = normalizeReceivedNote(packet.payload, senderNodeId);
-    if (!normalized) return;
-    const existing = radioState.receivedNotes.find((note) => note.noteId === normalized.noteId);
-    if (existing) {
-      existing.updatedAt = new Date().toISOString();
-      existing.lastPayload = normalized.payload;
-    } else {
-      radioState.receivedNotes.unshift(normalized);
-      radioState.receivedNotes = radioState.receivedNotes.slice(0, 150);
-    }
-    persistRadioState();
-    addActivity("note_received", {
-      noteId: normalized.noteId,
-      fromNodeId: normalized.senderNodeId,
-      amountEth: normalized.amountEth
+  if (kind === "NOTE") {
+    const normalized = normalizeReceivedNotes(packet.payload, senderNodeId);
+    if (!normalized.notes.length) return;
+    normalized.notes.forEach((receivedNote) => {
+      const existing = radioState.receivedNotes.find((note) => note.noteId === receivedNote.noteId);
+      if (existing) {
+        existing.updatedAt = new Date().toISOString();
+        existing.lastPayload = receivedNote.lastPayload;
+        existing.bundleId = receivedNote.bundleId;
+      } else {
+        radioState.receivedNotes.unshift(receivedNote);
+      }
+      addActivity("note_received", {
+        noteId: receivedNote.noteId,
+        fromNodeId: receivedNote.senderNodeId,
+        amountEth: receivedNote.amountEth
+      });
     });
-    sendNoteAck(senderNodeId, normalized.noteId).catch((error) => {
+    radioState.receivedNotes = radioState.receivedNotes.slice(0, 150);
+    persistRadioState();
+    sendNoteAck(senderNodeId, normalized.bundleId).catch((error) => {
       addActivity("note_ack_failed", {
-        noteId: normalized.noteId,
+        noteId: normalized.bundleId,
         nodeId: senderNodeId,
         error: error.message
       });
@@ -773,9 +1163,9 @@ function handleProtocolPacket(packet, senderNodeId) {
     return;
   }
 
-  if (packet.kind === "NOTE_ACK") {
+  if (kind === "NOTE_ACK") {
     const noteId = String(packet.payload?.noteId || "").trim();
-    const entry = radioState.createdNotes.find((note) => note.noteId === noteId);
+    const entry = findCreatedNoteEntry(noteId);
     if (!entry) return;
     entry.status = "delivered";
     entry.deliveredAt = new Date().toISOString();
@@ -799,17 +1189,31 @@ async function sendNoteAck(destinationNodeId, noteId) {
     recipientNodeId: meshtasticStatus.localNodeId || null,
     timestamp: Math.floor(Date.now() / 1000)
   });
-  await sendProtocolPayload(destinationNodeId, packet);
+  await sendProtocolPayload(destinationNodeId, packet, {
+    waitForAck: true,
+    retryOnAckTimeout: MESH_ACK_RETRY_COUNT,
+    ackTimeoutRetryDelayMs: MESH_ACK_RETRY_DELAY_MS,
+    batchDelayMs: MESH_VALUE_PACKET_DELAY_MS
+  });
 }
 
 function normalizeAnnouncement(payload, senderNodeId) {
-  const walletAddress = normalizeAddress(payload?.walletAddress);
-  const contractAddress = normalizeAddress(payload?.contractAddress || ethers.ZeroAddress) || ethers.ZeroAddress;
-  const nodeId = String(payload?.nodeId || senderNodeId || "").trim();
-  const signature = String(payload?.signature || "").trim();
-  const timestamp = Number(payload?.timestamp || 0);
-  const chainId = Number(payload?.chainId || 0);
+  const walletAddress = normalizeAddress(payload?.walletAddress || payload?.a);
+  const contractFallback = normalizeAddress(settings.contractAddress || "") || ethers.ZeroAddress;
+  const contractAddress = normalizeAddress(payload?.contractAddress || payload?.c || contractFallback) || ethers.ZeroAddress;
+  const nodeId = String(payload?.nodeId || payload?.n || senderNodeId || "").trim();
+  const signature = String(payload?.signature || payload?.s || "").trim();
+  const timestamp = Number(payload?.timestamp || payload?.t || 0);
+  const chainId = Number(payload?.chainId || payload?.i || SEPOLIA_CHAIN_ID);
   if (!walletAddress || !nodeId || !signature || chainId !== SEPOLIA_CHAIN_ID || !timestamp) {
+    addProtocolLog("announcement_invalid", {
+      senderNodeId: senderNodeId || null,
+      hasWalletAddress: Boolean(walletAddress),
+      hasNodeId: Boolean(nodeId),
+      hasSignature: Boolean(signature),
+      chainId,
+      timestamp
+    });
     return null;
   }
   try {
@@ -838,6 +1242,11 @@ function normalizeAnnouncement(payload, senderNodeId) {
       verified: recovered.toLowerCase() === walletAddress.toLowerCase()
     };
   } catch {
+    addProtocolLog("announcement_verify_failed", {
+      senderNodeId: senderNodeId || null,
+      nodeId,
+      walletAddress
+    });
     return {
       nodeId,
       walletAddress,
@@ -850,101 +1259,141 @@ function normalizeAnnouncement(payload, senderNodeId) {
   }
 }
 
-function normalizeReceivedNote(payload, senderNodeId) {
-  const note = payload?.note;
-  const signature = String(payload?.signature || "");
-  if (!note || !signature) return null;
-  const issuer = normalizeAddress(note.issuer);
-  const recipient = normalizeAddress(note.recipient);
-  const contractAddress = normalizeAddress(note.contractAddress);
-  if (!issuer || !recipient || !contractAddress) return null;
-
-  const noteId = String(note.noteId || "").trim();
-  const amount = String(note.amount || "0");
-  const expiry = Number(note.expiry || 0);
-  const chainId = Number(note.chainId || 0);
-  if (!noteId || !amount || !expiry || chainId !== SEPOLIA_CHAIN_ID) return null;
-
-  let validSignature = false;
-  try {
-    const recovered = ethers.verifyTypedData(
-      getNoteDomain(contractAddress),
-      NOTE_TYPES,
-      {
-        issuer,
-        recipient,
-        amount,
-        noteId,
-        expiry,
-        contractAddress,
-        chainId
-      },
-      signature
-    );
-    validSignature = recovered.toLowerCase() === issuer.toLowerCase();
-  } catch {
-    validSignature = false;
-  }
-
-  const walletMatches = Boolean(walletData?.address) && walletData.address.toLowerCase() === recipient.toLowerCase();
+function normalizeReceivedNotes(payload, senderNodeId) {
+  const bundleId = String(payload?.b || payload?.bundleId || payload?.noteId || "").trim() || randomNoteId();
+  const compactNotes = Array.isArray(payload?.n)
+    ? payload.n.map((item) => ({
+      issuer: payload?.i,
+      recipient: payload?.r,
+      contractAddress: payload?.c || settings.contractAddress || ethers.ZeroAddress,
+      chainId: SEPOLIA_CHAIN_ID,
+      amount: Array.isArray(item) ? item[0] : item?.amount,
+      noteId: Array.isArray(item) ? item[1] : item?.noteId,
+      expiry: Array.isArray(item) ? item[2] : item?.expiry,
+      signature: Array.isArray(item) ? item[3] : item?.signature
+    }))
+    : [];
+  const incomingNotes = compactNotes.length
+    ? compactNotes
+    : payload?.note && payload?.signature
+      ? [{
+        issuer: payload.note.issuer,
+        recipient: payload.note.recipient,
+        contractAddress: payload.note.contractAddress,
+        chainId: payload.note.chainId,
+        amount: payload.note.amount,
+        noteId: payload.note.noteId,
+        expiry: payload.note.expiry,
+        signature: payload.signature
+      }]
+      : [];
+  const memo = String(payload?.m || payload?.memo || "");
+  const normalized = [];
+  incomingNotes.forEach((raw) => {
+    const issuer = normalizeAddress(raw.issuer);
+    const recipient = normalizeAddress(raw.recipient);
+    const contractAddress = normalizeAddress(raw.contractAddress);
+    if (!issuer || !recipient || !contractAddress) return;
+    const noteId = String(raw.noteId || "").trim();
+    const amount = String(raw.amount || "0");
+    const expiry = Number(raw.expiry || 0);
+    const chainId = Number(raw.chainId || SEPOLIA_CHAIN_ID);
+    const signature = String(raw.signature || "");
+    if (!noteId || !amount || !expiry || !signature || chainId !== SEPOLIA_CHAIN_ID) return;
+    let validSignature = false;
+    try {
+      const recovered = ethers.verifyTypedData(
+        getNoteDomain(contractAddress),
+        NOTE_TYPES,
+        {
+          issuer,
+          recipient,
+          amount,
+          noteId,
+          expiry,
+          contractAddress,
+          chainId
+        },
+        signature
+      );
+      validSignature = recovered.toLowerCase() === issuer.toLowerCase();
+    } catch {
+      validSignature = false;
+    }
+    const walletMatches = Boolean(walletData?.address) && walletData.address.toLowerCase() === recipient.toLowerCase();
+    normalized.push({
+      noteId,
+      bundleId,
+      senderNodeId,
+      issuer,
+      recipient,
+      amountWei: amount,
+      amountEth: formatEtherValue(amount),
+      expiry,
+      contractAddress,
+      chainId,
+      signature,
+      memo,
+      payload: "",
+      lastPayload: "",
+      receivedAt: new Date().toISOString(),
+      status: walletMatches ? "ready_to_redeem" : "wrong_wallet",
+      validSignature,
+      walletMatches
+    });
+  });
   return {
-    noteId,
-    senderNodeId,
-    issuer,
-    recipient,
-    amountWei: amount,
-    amountEth: formatEtherValue(amount),
-    expiry,
-    contractAddress,
-    chainId,
-    signature,
-    memo: String(payload?.memo || ""),
-    payload: encodeProtocolPacket("NOTE", payload),
-    receivedAt: new Date().toISOString(),
-    status: walletMatches ? "ready_to_redeem" : "wrong_wallet",
-    validSignature,
-    walletMatches
+    bundleId,
+    notes: normalized
   };
 }
 
 async function sendProtocolPayload(destinationId, packetText, options = {}) {
   const packets = splitProtocolText(packetText, makeTransferId());
-  let sentChunks = 0;
-  for (let index = 0; index < packets.length; index += 1) {
-    const clientMsgId = `cmid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await sendBridge({
-      type: "send_text",
-      payload: {
-        destinationId,
+  const task = async () => {
+    let sentChunks = 0;
+    for (let index = 0; index < packets.length; index += 1) {
+      const clientMsgId = `cmid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await sendBridge({
+        type: "send_text",
+        payload: {
+          destinationId,
+          text: packets[index],
+          channelIndex: options.channelIndex ?? 0,
+          wantAck: true,
+          waitForAck: Boolean(options.waitForAck),
+          retryOnAckTimeout: options.retryOnAckTimeout ?? MESH_ACK_RETRY_COUNT,
+          ackTimeoutRetryDelayMs: options.ackTimeoutRetryDelayMs ?? MESH_ACK_RETRY_DELAY_MS,
+          clientMsgId
+        }
+      });
+      addMessage({
+        direction: "out",
+        sender: meshtasticStatus.localNodeId || "local",
+        recipient: destinationId,
         text: packets[index],
         channelIndex: options.channelIndex ?? 0,
-        wantAck: true,
+        isDirectMessage: destinationId !== "^all",
+        transport: "serial",
+        ack: "pending",
         clientMsgId
+      });
+      sentChunks = index + 1;
+      if (typeof options.onProgress === "function") {
+        options.onProgress(sentChunks, packets.length);
       }
-    });
-    addMessage({
-      direction: "out",
-      sender: meshtasticStatus.localNodeId || "local",
-      recipient: destinationId,
-      text: packets[index],
-      channelIndex: options.channelIndex ?? 0,
-      isDirectMessage: destinationId !== "^all",
-      transport: "serial",
-      ack: "pending",
-      clientMsgId
-    });
-    sentChunks = index + 1;
-    if (typeof options.onProgress === "function") {
-      options.onProgress(sentChunks, packets.length);
+      if (index < packets.length - 1) {
+        await sleep(options.batchDelayMs ?? MESH_PACKET_DELAY_MS);
+      }
     }
-    if (index < packets.length - 1) {
-      await sleep(MESH_PACKET_DELAY_MS);
-    }
-  }
-  return {
-    totalChunks: packets.length,
-    sentChunks
+    return {
+      totalChunks: packets.length,
+      sentChunks
+    };
   };
+  const queued = meshSendQueue.catch(() => {}).then(task);
+  meshSendQueue = queued;
+  return queued;
 }
 
 function sleep(ms) {
@@ -956,7 +1405,7 @@ async function announceWalletOnMesh(force = false) {
   if (!meshtasticStatus.connected || !meshtasticStatus.localNodeId) return;
   if (!settings.contractAddress || !ethers.isAddress(settings.contractAddress)) return;
 
-  const signer = getSigner();
+  const signer = getOfflineSigner();
   const announcement = {
     walletAddress: walletData.address,
     nodeId: meshtasticStatus.localNodeId,
@@ -993,7 +1442,7 @@ async function buildWalletAnnouncementPayload(nodeIdOverride = null) {
   if (!nodeId) {
     throw new Error("Meshtastic local node id is not available");
   }
-  const signer = getSigner();
+  const signer = getOfflineSigner();
   const announcement = {
     walletAddress: walletData.address,
     nodeId,
@@ -1013,14 +1462,29 @@ async function buildWalletAnnouncementPayload(nodeIdOverride = null) {
 }
 
 async function respondToHandshake(destinationNodeId, payload = {}) {
-  if (!meshtasticStatus.connected) return;
-  if (!walletData?.address) return;
-  if (!destinationNodeId) return;
+  if (!meshtasticStatus.connected) {
+    addProtocolLog("handshake_reply_skipped", { reason: "mesh_not_connected" });
+    return;
+  }
+  if (!walletData?.address) {
+    addProtocolLog("handshake_reply_skipped", { reason: "wallet_not_configured" });
+    return;
+  }
+  if (!destinationNodeId) {
+    addProtocolLog("handshake_reply_skipped", { reason: "missing_destination" });
+    return;
+  }
   const responsePayload = await buildWalletAnnouncementPayload();
-  const packet = encodeProtocolPacket("READY", {
-    ...responsePayload,
-    protocol: "radio-note-v1",
-    responseTo: String(payload?.requestId || "")
+  const packet = encodeProtocolPacket("R", {
+    a: responsePayload.walletAddress,
+    t: responsePayload.timestamp,
+    s: responsePayload.signature,
+    r: String(payload?.requestId || payload?.r || "")
+  });
+  addProtocolLog("handshake_reply_send", {
+    destinationNodeId,
+    requestId: String(payload?.requestId || payload?.r || ""),
+    packetLength: packet.length
   });
   await sendProtocolPayload(destinationNodeId, packet);
 }
@@ -1045,7 +1509,7 @@ function resetWallet() {
 }
 
 async function sendOnchainEth(to, amountEth) {
-  const signer = getSigner();
+  const signer = getConnectedSigner();
   const normalizedTo = normalizeAddress(to);
   if (!normalizedTo) throw new Error("Invalid recipient address");
   const value = parseEthAmount(amountEth);
@@ -1066,7 +1530,7 @@ async function sendOnchainEth(to, amountEth) {
 }
 
 async function depositIntoVault(amountEth) {
-  const signer = getSigner();
+  const signer = getConnectedSigner();
   const vault = getVault(signer);
   const value = parseEthAmount(amountEth);
   const tx = await vault.deposit({ value });
@@ -1081,7 +1545,7 @@ async function depositIntoVault(amountEth) {
 }
 
 async function withdrawFromVault(amountEth) {
-  const signer = getSigner();
+  const signer = getConnectedSigner();
   const vault = getVault(signer);
   const value = parseEthAmount(amountEth);
   const tx = await vault.withdrawAvailable(value);
@@ -1127,13 +1591,34 @@ async function checkRecipientNode(recipientNodeId) {
     error: null
   });
   const requestId = makeTransferId();
-  const packet = encodeProtocolPacket("HELLO", {
-    requestId,
-    protocol: "radio-note-v1",
-    senderNodeId: meshtasticStatus.localNodeId || null,
-    timestamp: Math.floor(Date.now() / 1000)
+  const packet = encodeProtocolPacket("H", {
+    r: requestId
   });
-  await sendProtocolPayload(nodeId, packet);
+  addProtocolLog("handshake_request_send", {
+    recipientNodeId: nodeId,
+    requestId,
+    packetLength: packet.length
+  });
+  await sendProtocolPayload(nodeId, packet, {
+    waitForAck: true,
+    retryOnAckTimeout: MESH_ACK_RETRY_COUNT,
+    ackTimeoutRetryDelayMs: MESH_ACK_RETRY_DELAY_MS
+  });
+  setTimeout(() => {
+    const handshake = radioState.handshakes[nodeId];
+    if (!handshake) return;
+    if (handshake.status !== "pending") return;
+    if (Date.now() - Number(handshake.checkedAt || 0) < HANDSHAKE_REPLY_TIMEOUT_MS) return;
+    addProtocolLog("handshake_timeout", {
+      recipientNodeId: nodeId,
+      requestId
+    });
+    markHandshake(nodeId, {
+      ready: false,
+      status: "timeout",
+      error: "No wallet reply over mesh"
+    });
+  }, HANDSHAKE_REPLY_TIMEOUT_MS + 250);
   addActivity("handshake_requested", {
     nodeId
   });
@@ -1143,58 +1628,116 @@ async function checkRecipientNode(recipientNodeId) {
   };
 }
 
-async function createRadioNote({ recipientNodeId, amountEth, expiryMinutes, memo }) {
-  if (!meshtasticStatus.connected) {
-    throw new Error("Meshtastic is not connected");
-  }
-  const announcement = getRecipientAnnouncement(recipientNodeId);
-  const signer = getSigner();
+async function prepareOffgridAmount({ amountEth, expiryDays }) {
+  const signer = getConnectedSigner();
   const vault = getVault(signer);
   const amountWei = parseEthAmount(amountEth);
-  const expiry = Math.floor(Date.now() / 1000) + Math.max(5, Number(expiryMinutes || 60)) * 60;
   const noteId = randomNoteId();
-  const issuer = walletData.address;
-  const note = {
-    issuer,
-    recipient: announcement.walletAddress,
-    amount: amountWei.toString(),
-    noteId,
-    expiry,
-    contractAddress: settings.contractAddress,
-    chainId: SEPOLIA_CHAIN_ID
-  };
-
-  const commitTx = await vault.commitNote(noteId, announcement.walletAddress, amountWei, expiry);
-  addActivity("note_commit_submitted", {
+  const expiry = Math.floor(Date.now() / 1000) + Math.max(1, Number(expiryDays || DEFAULT_PREPARE_EXPIRY_DAYS)) * 24 * 60 * 60;
+  const tx = await vault.prepareNote(noteId, amountWei, expiry);
+  addActivity("note_prepare_submitted", {
     noteId,
     amountEth: String(amountEth),
-    recipientNodeId,
-    txHash: commitTx.hash
+    txHash: tx.hash
   });
-  await commitTx.wait();
-
-  const signature = await signer.signTypedData(getNoteDomain(), NOTE_TYPES, note);
-  const payloadObject = {
-    note,
-    signature,
-    memo: String(memo || ""),
-    recipientNodeId
-  };
-  const payload = encodeProtocolPacket("NOTE", payloadObject);
+  await tx.wait();
 
   const entry = {
     noteId,
     amountWei: amountWei.toString(),
     amountEth: formatEtherValue(amountWei),
+    expiry,
+    prepareTxHash: tx.hash,
+    preparedAt: new Date().toISOString(),
+    status: "ready"
+  };
+  radioState.preparedNotes.unshift(entry);
+  radioState.preparedNotes = radioState.preparedNotes.slice(0, 200);
+  persistRadioState();
+  addActivity("note_prepared", {
+    noteId,
+    amountEth: entry.amountEth,
+    txHash: tx.hash
+  });
+  return entry;
+}
+
+function takePreparedNotes(noteIds = []) {
+  refreshPreparedNotesState();
+  const wantedIds = Array.from(new Set((Array.isArray(noteIds) ? noteIds : [noteIds]).map((noteId) => String(noteId || "").trim()).filter(Boolean)));
+  if (!wantedIds.length) {
+    throw new Error("Select a prepared amount first");
+  }
+  const readyById = new Map(
+    radioState.preparedNotes
+      .filter((note) => note.status === "ready")
+      .map((note) => [String(note.noteId || "").trim(), note])
+  );
+  const selected = wantedIds.map((noteId) => readyById.get(noteId)).filter(Boolean);
+  if (selected.length !== wantedIds.length) {
+    throw new Error("Some prepared chunks are no longer available. Refresh and try again.");
+  }
+  const selectedSet = new Set(wantedIds);
+  radioState.preparedNotes = radioState.preparedNotes.filter((note) => !selectedSet.has(String(note.noteId || "").trim()));
+  persistRadioState();
+  return selected;
+}
+
+async function createRadioNote({ recipientNodeId, preparedNoteIds, memo }) {
+  if (!meshtasticStatus.connected) {
+    throw new Error("Meshtastic is not connected");
+  }
+  const selectedNoteIds = Array.from(new Set((Array.isArray(preparedNoteIds) ? preparedNoteIds : [preparedNoteIds]).map((noteId) => String(noteId || "").trim()).filter(Boolean)));
+  if (!selectedNoteIds.length) {
+    throw new Error("Select a prepared amount first");
+  }
+  const announcement = getRecipientAnnouncement(recipientNodeId);
+  const preparedEntries = takePreparedNotes(selectedNoteIds);
+  const signer = getOfflineSigner();
+  const issuer = walletData.address;
+  const bundleId = randomNoteId();
+  const bundleParts = [];
+  for (const prepared of preparedEntries) {
+    const note = {
+      issuer,
+      recipient: announcement.walletAddress,
+      amount: prepared.amountWei,
+      noteId: prepared.noteId,
+      expiry: prepared.expiry,
+      contractAddress: settings.contractAddress,
+      chainId: SEPOLIA_CHAIN_ID
+    };
+    const signature = await signer.signTypedData(getNoteDomain(), NOTE_TYPES, note);
+    bundleParts.push([prepared.amountWei, prepared.noteId, prepared.expiry, signature]);
+  }
+  const payloadObject = {
+    b: bundleId,
+    i: issuer,
+    r: announcement.walletAddress,
+    c: settings.contractAddress,
+    n: bundleParts,
+    m: String(memo || "")
+  };
+  const payload = encodeProtocolPacket("NOTE_BUNDLE", payloadObject);
+  const totalAmountWei = sumWeiValues(preparedEntries.map((entry) => entry.amountWei));
+  const earliestExpiry = preparedEntries.reduce((min, entry) => Math.min(min, Number(entry.expiry || 0) || Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER);
+
+  const entry = {
+    noteId: bundleId,
+    bundleId,
+    noteIds: preparedEntries.map((prepared) => prepared.noteId),
+    noteCount: preparedEntries.length,
+    amountWei: totalAmountWei.toString(),
+    amountEth: formatEtherValue(totalAmountWei),
     recipientNodeId,
     recipientAddress: announcement.walletAddress,
-    expiry,
+    expiry: earliestExpiry === Number.MAX_SAFE_INTEGER ? 0 : earliestExpiry,
     memo: String(memo || ""),
-    signature,
     payload,
-    commitTxHash: commitTx.hash,
+    prepareTxHashes: preparedEntries.map((prepared) => prepared.prepareTxHash).filter(Boolean),
+    preparedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
-    status: "committed",
+    status: "prepared",
     transferQueuedChunks: 0,
     transferTotalChunks: 0
   };
@@ -1206,6 +1749,10 @@ async function createRadioNote({ recipientNodeId, amountEth, expiryMinutes, memo
     entry.status = "sending_over_mesh";
     persistRadioState();
     const result = await sendProtocolPayload(recipientNodeId, payload, {
+      waitForAck: true,
+      retryOnAckTimeout: MESH_ACK_RETRY_COUNT,
+      ackTimeoutRetryDelayMs: MESH_ACK_RETRY_DELAY_MS,
+      batchDelayMs: MESH_VALUE_PACKET_DELAY_MS,
       onProgress: (sentChunks, totalChunks) => {
         entry.transferQueuedChunks = sentChunks;
         entry.transferTotalChunks = totalChunks;
@@ -1217,7 +1764,7 @@ async function createRadioNote({ recipientNodeId, amountEth, expiryMinutes, memo
     entry.status = "sent_over_mesh";
     entry.sentAt = new Date().toISOString();
     addActivity("note_sent", {
-      noteId,
+      noteId: entry.bundleId,
       recipientNodeId,
       amountEth: entry.amountEth
     });
@@ -1225,7 +1772,7 @@ async function createRadioNote({ recipientNodeId, amountEth, expiryMinutes, memo
     entry.status = "mesh_send_failed";
     entry.meshError = error.message;
     addActivity("note_send_failed", {
-      noteId,
+      noteId: entry.bundleId,
       recipientNodeId,
       error: error.message
     });
@@ -1235,12 +1782,16 @@ async function createRadioNote({ recipientNodeId, amountEth, expiryMinutes, memo
 }
 
 async function resendRadioNote(noteId) {
-  const entry = radioState.createdNotes.find((note) => note.noteId === noteId);
+  const entry = findCreatedNoteEntry(noteId);
   if (!entry) throw new Error("Unknown note");
   if (!entry.payload) throw new Error("Proof already acknowledged by recipient");
   entry.status = "sending_over_mesh";
   persistRadioState();
   const result = await sendProtocolPayload(entry.recipientNodeId, entry.payload, {
+    waitForAck: true,
+    retryOnAckTimeout: MESH_ACK_RETRY_COUNT,
+    ackTimeoutRetryDelayMs: MESH_ACK_RETRY_DELAY_MS,
+    batchDelayMs: MESH_VALUE_PACKET_DELAY_MS,
     onProgress: (sentChunks, totalChunks) => {
       entry.transferQueuedChunks = sentChunks;
       entry.transferTotalChunks = totalChunks;
@@ -1252,7 +1803,7 @@ async function resendRadioNote(noteId) {
   entry.status = "resent_over_mesh";
   entry.resentAt = new Date().toISOString();
   persistRadioState();
-  addActivity("note_resent", { noteId: entry.noteId, recipientNodeId: entry.recipientNodeId });
+  addActivity("note_resent", { noteId: entry.bundleId || entry.noteId, recipientNodeId: entry.recipientNodeId });
 }
 
 async function redeemRadioNote(noteId) {
@@ -1260,7 +1811,7 @@ async function redeemRadioNote(noteId) {
   if (!entry) throw new Error("Unknown received note");
   if (!entry.validSignature) throw new Error("Note signature is invalid");
   if (!entry.walletMatches) throw new Error("This note is not addressed to the current wallet");
-  const signer = getSigner();
+  const signer = getConnectedSigner();
   const vault = getVault(signer);
   const note = {
     issuer: entry.issuer,
@@ -1293,20 +1844,26 @@ async function redeemRadioNote(noteId) {
 }
 
 async function cancelRadioNote(noteId) {
-  const entry = radioState.createdNotes.find((note) => note.noteId === noteId);
+  const entry = findCreatedNoteEntry(noteId);
   if (!entry) throw new Error("Unknown note");
-  const signer = getSigner();
+  const signer = getConnectedSigner();
   const vault = getVault(signer);
-  const tx = await vault.cancelExpiredNote(noteId);
+  const noteIds = Array.isArray(entry.noteIds) && entry.noteIds.length ? entry.noteIds : [entry.noteId];
   entry.status = "cancel_submitted";
-  entry.cancelTxHash = tx.hash;
   persistRadioState();
-  await tx.wait();
+  const txHashes = [];
+  for (const currentNoteId of noteIds) {
+    const tx = await vault.cancelExpiredNote(currentNoteId);
+    txHashes.push(tx.hash);
+    await tx.wait();
+  }
+  entry.cancelTxHash = txHashes[txHashes.length - 1] || "";
+  entry.cancelTxHashes = txHashes;
   entry.status = "canceled";
   entry.canceledAt = new Date().toISOString();
   persistRadioState();
-  addActivity("note_canceled", { noteId, txHash: tx.hash });
-  return tx.hash;
+  addActivity("note_canceled", { noteId: entry.bundleId || entry.noteId, txHash: entry.cancelTxHash });
+  return entry.cancelTxHash;
 }
 
 async function generateAddressQr(text) {
@@ -1465,6 +2022,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && parsed.pathname === "/api/offgrid/prepare") {
+      const body = await readJson(req);
+      const note = await prepareOffgridAmount({
+        amountEth: String(body.amountEth || "").trim(),
+        expiryDays: Number(body.expiryDays || DEFAULT_PREPARE_EXPIRY_DAYS)
+      });
+      sendJson(res, 200, { ok: true, note });
+      return;
+    }
+
     if (req.method === "POST" && parsed.pathname === "/api/notes/check-recipient") {
       const body = await readJson(req);
       const result = await checkRecipientNode(String(body.recipientNodeId || "").trim());
@@ -1476,8 +2043,9 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const note = await createRadioNote({
         recipientNodeId: String(body.recipientNodeId || "").trim(),
-        amountEth: String(body.amountEth || "").trim(),
-        expiryMinutes: Number(body.expiryMinutes || 60),
+        preparedNoteIds: Array.isArray(body.preparedNoteIds)
+          ? body.preparedNoteIds.map((value) => String(value || "").trim()).filter(Boolean)
+          : String(body.preparedNoteId || "").trim(),
         memo: String(body.memo || "")
       });
       sendJson(res, 200, { ok: true, note });

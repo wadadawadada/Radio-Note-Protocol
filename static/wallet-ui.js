@@ -24,6 +24,11 @@ const els = {
   walletQuickButtons: Array.from(document.querySelectorAll(".wallet-quick-button")),
   walletHomeNoWallet: document.getElementById("walletHomeNoWallet"),
   walletHomeSummary: document.getElementById("walletHomeSummary"),
+  walletClaimableRow: document.getElementById("walletClaimableRow"),
+  walletClaimableValue: document.getElementById("walletClaimableValue"),
+  walletIncomingRow: document.getElementById("walletIncomingRow"),
+  walletIncomingLabel: document.getElementById("walletIncomingLabel"),
+  walletIncomingFill: document.getElementById("walletIncomingFill"),
   walletHomeCreateButton: document.getElementById("walletHomeCreateButton"),
   walletReceivePreview: document.getElementById("walletReceivePreview"),
   walletCopyAddressButton: document.getElementById("walletCopyAddressButton"),
@@ -38,10 +43,11 @@ const els = {
   walletReceiveNoWallet: document.getElementById("walletReceiveNoWallet"),
   walletReceiveContent: document.getElementById("walletReceiveContent"),
   walletQrLoading: document.getElementById("walletQrLoading"),
-  walletQrImage: document.getElementById("walletQrImage"),
-  walletReceiveId: document.getElementById("walletReceiveId"),
-  walletCopyReceiveIdButton: document.getElementById("walletCopyReceiveIdButton"),
-  receivedNotesList: document.getElementById("receivedNotesList"),
+    walletQrImage: document.getElementById("walletQrImage"),
+    walletReceiveId: document.getElementById("walletReceiveId"),
+    walletCopyReceiveIdButton: document.getElementById("walletCopyReceiveIdButton"),
+    incomingTransfersList: document.getElementById("incomingTransfersList"),
+    receivedNotesList: document.getElementById("receivedNotesList"),
   sendNotesTab: document.getElementById("sendNotesTab"),
   sendWalletTab: document.getElementById("sendWalletTab"),
   sendNotesPanel: document.getElementById("sendNotesPanel"),
@@ -50,8 +56,11 @@ const els = {
   walletRecipientInput: document.getElementById("walletRecipientInput"),
   walletCheckRecipientButton: document.getElementById("walletCheckRecipientButton"),
   walletRecipientStatus: document.getElementById("walletRecipientStatus"),
-  walletAmountInput: document.getElementById("walletAmountInput"),
-  walletExpiryInput: document.getElementById("walletExpiryInput"),
+  walletPreparedSliderWrap: document.getElementById("walletPreparedSliderWrap"),
+  walletPreparedSlider: document.getElementById("walletPreparedSlider"),
+  walletPreparedSelectionValue: document.getElementById("walletPreparedSelectionValue"),
+  walletPreparedSelectionMeta: document.getElementById("walletPreparedSelectionMeta"),
+  sendPreparedInventoryEmpty: document.getElementById("sendPreparedInventoryEmpty"),
   walletMemoInput: document.getElementById("walletMemoInput"),
   walletSendSubmitButton: document.getElementById("walletSendSubmitButton"),
   walletSendStatus: document.getElementById("walletSendStatus"),
@@ -64,6 +73,12 @@ const els = {
   sendOnchainBalance: document.getElementById("sendOnchainBalance"),
   vaultPanelAvailable: document.getElementById("vaultPanelAvailable"),
   vaultPanelReserved: document.getElementById("vaultPanelReserved"),
+  prepareAvailableValue: document.getElementById("prepareAvailableValue"),
+  prepareForm: document.getElementById("prepareForm"),
+  prepareAmountInput: document.getElementById("prepareAmountInput"),
+  prepareExpiryDaysInput: document.getElementById("prepareExpiryDaysInput"),
+  prepareStatus: document.getElementById("prepareStatus"),
+  preparedNotesList: document.getElementById("preparedNotesList"),
   depositForm: document.getElementById("depositForm"),
   depositAmountInput: document.getElementById("depositAmountInput"),
   depositStatus: document.getElementById("depositStatus"),
@@ -101,13 +116,28 @@ const ui = {
   lastQrAddress: null,
   mnemonic: localStorage.getItem("radio-note:last-mnemonic") || "",
   seedVisible: false,
-  portsOpen: false
+  portsOpen: false,
+  sendOptions: [],
+  sendOptionIndex: 0
 };
 
 const esc = (v) => String(v ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 const short = (v) => (!v ? "-" : `${v.slice(0, 10)}...${v.slice(-8)}`);
 const fmtTime = (v) => { try { return v ? new Date(v).toLocaleString() : "-"; } catch { return String(v || "-"); } };
 const fmtEpoch = (v) => (v ? fmtTime(Number(v) * 1000) : "-");
+
+function formatEtherValue(wei) {
+  try {
+    const value = BigInt(wei || 0);
+    const whole = value / 1000000000000000000n;
+    const fraction = value % 1000000000000000000n;
+    if (fraction === 0n) return whole.toString();
+    const fractionText = fraction.toString().padStart(18, "0").replace(/0+$/, "");
+    return `${whole}.${fractionText.slice(0, 6)}`;
+  } catch {
+    return "0";
+  }
+}
 
 function setStatus(el, text, tone = "") {
   if (!el) return;
@@ -227,7 +257,7 @@ async function renderQr(address) {
 function noteTone(note) {
   if (note.status === "redeemed" || note.status === "delivered") return "success";
   if (String(note.status || "").includes("failed") || note.validSignature === false) return "danger";
-  if (["ready_to_redeem", "sent_over_mesh", "resent_over_mesh"].includes(note.status)) return "success";
+  if (["sent_over_mesh", "resent_over_mesh"].includes(note.status)) return "success";
   return "warning";
 }
 
@@ -276,6 +306,15 @@ function getProgressInfo(note) {
       fillClass: "is-danger"
     };
   }
+  if (note.status === "prepared") {
+    return {
+      label: "Prepared for off-grid send",
+      current: 0,
+      total: 0,
+      percent: 0,
+      fillClass: "is-warning"
+    };
+  }
   return {
     label: total ? `Queued ${sent}/${total} chunks` : "Waiting for send",
     current: sent,
@@ -284,6 +323,19 @@ function getProgressInfo(note) {
     fillClass: "is-warning"
   };
 }
+
+  function getIncomingProgressInfo(transfer) {
+    const total = Number(transfer.totalChunks || 0);
+    const received = total ? Math.min(Number(transfer.receivedChunks || 0), total) : Number(transfer.receivedChunks || 0);
+    const percent = total ? Math.round((received / total) * 100) : 0;
+    return {
+      label: total ? `Receiving ${received}/${total} chunks` : "Receiving over mesh",
+      current: received,
+      total,
+      percent,
+      fillClass: "is-warning"
+    };
+  }
 
 function activityTone(type) {
   const name = String(type || "");
@@ -298,8 +350,69 @@ function formatActivityType(type) {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+function getReadyPreparedNotes(notes = []) {
+  return notes
+    .filter((note) => note.status === "ready")
+    .map((note) => ({
+      ...note,
+      amountWeiBigInt: BigInt(String(note.amountWei || "0"))
+    }))
+    .sort((a, b) => (a.amountWeiBigInt < b.amountWeiBigInt ? -1 : a.amountWeiBigInt > b.amountWeiBigInt ? 1 : String(a.noteId || "").localeCompare(String(b.noteId || ""))));
+}
+
+function buildPreparedSendOptions(notes = []) {
+  const ready = getReadyPreparedNotes(notes);
+  const sums = new Map([[0n, []]]);
+  ready.forEach((note) => {
+    const snapshot = Array.from(sums.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    snapshot.forEach(([sum, selected]) => {
+      const nextSum = sum + note.amountWeiBigInt;
+      if (!sums.has(nextSum)) {
+        sums.set(nextSum, [...selected, note]);
+      }
+    });
+  });
+  sums.delete(0n);
+  return Array.from(sums.entries())
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([amountWei, selected]) => {
+      const counts = new Map();
+      selected.forEach((note) => {
+        const key = formatEtherValue(note.amountWeiBigInt);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      });
+      const partsLabel = Array.from(counts.entries())
+        .sort((a, b) => Number(a[0]) - Number(b[0]))
+        .map(([amountEth, count]) => `${count} x ${amountEth} ETH`)
+        .join(" + ");
+      return {
+        amountWei: amountWei.toString(),
+        amountEth: formatEtherValue(amountWei),
+        noteIds: selected.map((note) => note.noteId),
+        noteCount: selected.length,
+        expiresAt: selected.reduce((min, note) => Math.min(min, Number(note.expiry || 0) || Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER),
+        partsLabel
+      };
+    });
+}
+
+function clampPreparedSendOptionIndex(options = ui.sendOptions) {
+  if (!Array.isArray(options) || !options.length) {
+    ui.sendOptionIndex = 0;
+    return null;
+  }
+  ui.sendOptionIndex = Math.max(0, Math.min(Number(ui.sendOptionIndex || 0), options.length - 1));
+  return options[ui.sendOptionIndex] || null;
+}
+
+function getCurrentPreparedSendOption() {
+  return clampPreparedSendOptionIndex();
+}
+
 function describeActivity(item) {
   const type = String(item.type || "");
+  if (type === "note_prepare_submitted") return `${item.amountEth || "-"} ETH prepare submitted`;
+  if (type === "note_prepared") return `${item.amountEth || "-"} ETH ready for off-grid send`;
   if (type === "note_sent") return `${item.amountEth || "-"} ETH to ${item.recipientNodeId || "-"}`;
   if (type === "note_delivered") return `${item.amountEth || "-"} ETH delivered to ${item.recipientNodeId || "-"}`;
   if (type === "note_received") return `${item.amountEth || "-"} ETH from ${item.fromNodeId || "-"}`;
@@ -323,6 +436,8 @@ function getNodeById(nodeId) {
 
 function renderRecipientStatus() {
   const walletConfigured = Boolean(ui.state?.wallet?.configured && ui.state?.wallet?.address);
+  const selectedOption = getCurrentPreparedSendOption();
+  const hasPreparedSelection = Boolean(selectedOption?.noteIds?.length);
   if (!walletConfigured) {
     setStatus(els.walletRecipientStatus, "Create a local wallet first.", "warning");
     els.walletSendSubmitButton.disabled = true;
@@ -336,8 +451,14 @@ function renderRecipientStatus() {
     return;
   }
   if (node.ready && node.addressValid) {
-    setStatus(els.walletRecipientStatus, `Ready: ${node.name || node.id} can receive radio notes`, "success");
-    els.walletSendSubmitButton.disabled = false;
+    setStatus(
+      els.walletRecipientStatus,
+      hasPreparedSelection
+        ? `Ready: ${node.name || node.id} can receive ${selectedOption.amountEth} ETH off-grid`
+        : `Ready: ${node.name || node.id} can receive radio notes. Select a prepared amount.`,
+      hasPreparedSelection ? "success" : "warning"
+    );
+    els.walletSendSubmitButton.disabled = !hasPreparedSelection;
     return;
   }
   if (node.checkStatus === "pending") {
@@ -352,6 +473,7 @@ function renderRecipientStatus() {
 
 function renderDevice(state) {
   const mesh = state.meshtastic || {};
+  const wallet = state.wallet || {};
   let css = "loading";
   let title = "Checking device";
   let text = mesh.mode || "Bridge startup";
@@ -371,7 +493,8 @@ function renderDevice(state) {
   els.deviceStatus.className = `device-status ${css}`;
   els.deviceStatusTitle.textContent = title;
   els.deviceStatusText.textContent = text;
-  setStatus(els.runtimeError, mesh.error || state.wallet?.error || "", mesh.error || state.wallet?.error ? "danger" : "");
+  const runtimeMessage = mesh.error || wallet.error || "";
+  setStatus(els.runtimeError, runtimeMessage, runtimeMessage ? "danger" : "");
   els.walletMeshtasticStatus.textContent = mesh.connected ? "Connected" : mesh.mode || "Offline";
   els.walletMeshtasticStatus.className = mesh.connected ? "status-ok" : mesh.error ? "status-err" : "";
 
@@ -419,17 +542,30 @@ function renderNodes(nodes) {
 
 function renderRecipients(nodes) {
   const current = els.walletRecipientInput.value;
-  const online = nodes.filter((n) => n.online && n.address && n.addressValid);
-  const offline = nodes.filter((n) => !n.online && n.address && n.addressValid);
+  const localNodeId = ui.state?.meshtastic?.localNodeId || "";
+  const visibleNodes = nodes.filter((n) => n.id && n.id !== localNodeId);
+  const online = visibleNodes.filter((n) => n.online);
+  const offline = visibleNodes.filter((n) => !n.online);
   const out = ['<option value="">Select node</option>'];
+  const labelForNode = (node) => {
+    const parts = [node.name || node.id];
+    if (node.ready && node.addressValid) {
+      parts.push("ready");
+    } else if (node.address && node.addressValid) {
+      parts.push(short(node.address));
+    } else {
+      parts.push("check required");
+    }
+    return parts.join(" | ");
+  };
   if (online.length) {
     out.push('<optgroup label="Online">');
-    online.forEach((n) => out.push(`<option value="${esc(n.id)}">${esc(n.name || n.id)} | ${esc(short(n.address))}</option>`));
+    online.forEach((n) => out.push(`<option value="${esc(n.id)}">${esc(labelForNode(n))}</option>`));
     out.push("</optgroup>");
   }
   if (offline.length) {
     out.push('<optgroup label="Offline">');
-    offline.forEach((n) => out.push(`<option value="${esc(n.id)}">${esc(n.name || n.id)} | ${esc(short(n.address))}</option>`));
+    offline.forEach((n) => out.push(`<option value="${esc(n.id)}">${esc(labelForNode(n))}</option>`));
     out.push("</optgroup>");
   }
   els.walletRecipientInput.innerHTML = out.join("");
@@ -465,27 +601,43 @@ async function ensureMnemonicLoaded() {
 async function renderWallet(state) {
   const wallet = state.wallet || {};
   const mesh = state.meshtastic || {};
+  const preparedSummary = state.preparedSummary || {};
+  const preparedNotes = Array.isArray(state.preparedNotes) ? state.preparedNotes : [];
+  const incomingTransfers = Array.isArray(state.incomingTransfers) ? state.incomingTransfers : [];
   const ok = Boolean(wallet.configured && wallet.address);
   const address = wallet.address || "";
   const onchain = wallet.onchainBalanceEth == null ? "-" : `${wallet.onchainBalanceEth} ETH`;
   const available = wallet.availableLockedEth == null ? "-" : `${wallet.availableLockedEth} ETH`;
   const reserved = wallet.reservedLockedEth == null ? "-" : `${wallet.reservedLockedEth} ETH`;
+  const spendableOffgrid = preparedSummary.spendableEth == null ? "0" : preparedSummary.spendableEth;
+  const spendableLabel = `${spendableOffgrid} ETH`;
   els.heroWalletAddress.textContent = ok ? short(address) : "Not configured";
   els.heroOnchain.textContent = onchain;
-  els.heroVaultAvailable.textContent = available;
+  els.heroVaultAvailable.textContent = spendableLabel;
   els.heroVaultReserved.textContent = reserved;
   els.walletEngineStatus.textContent = ok ? "Configured" : "Not configured";
   els.walletEngineStatus.className = ok ? "status-ok" : "";
   els.walletReceivePreview.textContent = ok ? address : "Not configured";
   els.walletReceiveId.value = address;
   els.onchainBalanceValue.textContent = onchain;
-  els.vaultAvailableBalanceValue.textContent = available;
-  els.vaultAvailableSub.textContent = ok ? "Ready to commit into radio notes" : "Create a wallet and fund it with Sepolia ETH";
-  els.walletBalanceSub.textContent = mesh.connected ? "Local wallet, contract signer, mesh announcement source" : "Local EVM wallet balance";
-  els.sendVaultAvailable.textContent = available;
+  els.vaultAvailableBalanceValue.textContent = spendableLabel;
+  els.vaultAvailableSub.textContent = ok ? `Available to prepare from vault: ${available}` : "Create a wallet and fund it with Sepolia ETH";
+  if (wallet.rpcReachable === false && wallet.balancesStale) {
+    els.walletBalanceSub.textContent = wallet.cachedAt
+      ? `Offline mode: showing cached balances from ${fmtTime(wallet.cachedAt)}`
+      : "Offline mode: showing cached balances";
+  } else if (wallet.rpcReachable === false && settingsHasRpc(state)) {
+    els.walletBalanceSub.textContent = "Offline mode: radio notes still work, on-chain sync unavailable";
+  } else if (mesh.connected) {
+    els.walletBalanceSub.textContent = "Local wallet, contract signer, mesh announcement source";
+  } else {
+    els.walletBalanceSub.textContent = "Local EVM wallet balance";
+  }
+  els.sendVaultAvailable.textContent = spendableLabel;
   els.sendOnchainBalance.textContent = onchain;
   els.vaultPanelAvailable.textContent = available;
   els.vaultPanelReserved.textContent = reserved;
+  els.prepareAvailableValue.textContent = available;
   setVisible(els.walletHomeNoWallet, !ok);
   setVisible(els.walletHomeSummary, ok);
   setVisible(els.walletReceiveNoWallet, !ok);
@@ -496,6 +648,39 @@ async function renderWallet(state) {
   els.walletCopyReceiveIdButton.disabled = !ok;
   els.walletSendSubmitButton.disabled = !ok;
   els.walletResetButton.disabled = !ok;
+  renderPreparedNotes(preparedNotes);
+  renderPreparedSendOptions(preparedNotes);
+  const claimableNotes = (state.receivedNotes || []).filter((note) => note.validSignature && note.walletMatches && !["redeemed", "redeem_submitted"].includes(note.status));
+  const claimableWei = claimableNotes.reduce((sum, note) => {
+    try {
+      return sum + BigInt(note.amountWei || "0");
+    } catch {
+      return sum;
+    }
+  }, 0n);
+  const hasClaimable = claimableWei > 0n;
+  setVisible(els.walletClaimableRow, hasClaimable);
+  els.walletClaimableValue.textContent = hasClaimable
+    ? `+${formatEtherValue(claimableWei)} ETH claimable (offline)`
+    : "+0 ETH claimable (offline)";
+  const incomingSummary = incomingTransfers.reduce((acc, transfer) => {
+    acc.count += 1;
+    acc.received += Number(transfer.receivedChunks || 0);
+    acc.total += Number(transfer.totalChunks || 0);
+    return acc;
+  }, { count: 0, received: 0, total: 0 });
+  const hasIncoming = incomingSummary.count > 0 && incomingSummary.total > 0;
+  setVisible(els.walletIncomingRow, hasIncoming);
+  if (hasIncoming) {
+    const percent = Math.max(0, Math.min(incomingSummary.total ? Math.round((incomingSummary.received / incomingSummary.total) * 100) : 0, 100));
+    els.walletIncomingLabel.textContent = incomingSummary.count > 1
+      ? `Receiving ${incomingSummary.count} transfers: ${incomingSummary.received}/${incomingSummary.total} chunks`
+      : `Receiving ${incomingSummary.received}/${incomingSummary.total} chunks`;
+    els.walletIncomingFill.style.width = `${percent}%`;
+  } else {
+    els.walletIncomingLabel.textContent = "Receiving over mesh";
+    els.walletIncomingFill.style.width = "0%";
+  }
   els.walletInfoKv.innerHTML = [
     ["Address", address || "-"],
     ["Network", "Sepolia"],
@@ -509,6 +694,10 @@ async function renderWallet(state) {
   if (!canReveal) ui.seedVisible = false;
   renderSeedGrid();
   await renderQr(address);
+}
+
+function settingsHasRpc(state) {
+  return Boolean(state?.settings?.rpcUrl);
 }
 
 function renderReceivedNotes(notes) {
@@ -535,19 +724,107 @@ function renderReceivedNotes(notes) {
   }).join("");
 }
 
+  function renderIncomingTransfers(transfers) {
+    if (!transfers.length) {
+      els.incomingTransfersList.innerHTML = '<div class="node-empty">No incoming radio transfers.</div>';
+      return;
+    }
+    els.incomingTransfersList.innerHTML = transfers.map((transfer) => {
+      const progress = getIncomingProgressInfo(transfer);
+      const chunkInfo = progress.total ? `${progress.current}/${progress.total}` : `${progress.current}`;
+      return `
+        <article class="wallet-note-card">
+          <div class="wallet-note-head">
+            <div class="wallet-note-title">Receiving over mesh</div>
+            <span class="wallet-note-badge is-warning">in progress</span>
+          </div>
+          <div class="wallet-note-progress">
+            <div class="wallet-note-progress-head">
+              <span>${esc(progress.label)}</span>
+              <strong>${esc(chunkInfo)}</strong>
+            </div>
+            <div class="wallet-progress-track">
+              <div class="wallet-progress-fill ${esc(progress.fillClass)}" style="width:${Math.max(0, Math.min(progress.percent, 100))}%"></div>
+            </div>
+          </div>
+          <div class="wallet-note-meta">From node: ${esc(transfer.senderNodeId || "-")}</div>
+          <div class="wallet-note-meta">Transfer ID: ${esc(short(String(transfer.transferId || "")))}</div>
+          ${transfer.startedAt ? `<div class="wallet-note-meta">Started: ${esc(fmtTime(transfer.startedAt))}</div>` : ""}
+          ${transfer.updatedAt ? `<div class="wallet-note-meta">Updated: ${esc(fmtTime(transfer.updatedAt))}</div>` : ""}
+        </article>`;
+      }).join("");
+    }
+
+function renderPreparedNotes(notes) {
+  if (!notes.length) {
+    els.preparedNotesList.innerHTML = '<div class="node-empty">No off-grid amounts prepared yet.</div>';
+    return;
+  }
+  els.preparedNotesList.innerHTML = notes.map((note) => `
+    <article class="wallet-note-card">
+      <div class="wallet-note-head">
+        <div class="wallet-note-title">${esc(note.amountEth)} ETH</div>
+        <span class="wallet-note-badge ${note.status === "ready" ? "is-success" : note.status === "expired" ? "is-danger" : "is-warning"}">${esc(formatStatusLabel(note.status))}</span>
+      </div>
+      <div class="wallet-note-meta">Expires: ${esc(fmtEpoch(note.expiry))}</div>
+      <div class="wallet-note-meta">Note ID: ${esc(short(note.noteId || ""))}</div>
+      ${note.prepareTxHash ? `<div class="wallet-note-meta">Prepare tx: ${esc(short(note.prepareTxHash))}</div>` : ""}
+    </article>
+  `).join("");
+}
+
+function renderPreparedSendOptions(notes) {
+  const options = buildPreparedSendOptions(notes);
+  ui.sendOptions = options;
+  const current = clampPreparedSendOptionIndex(options);
+  const hasOptions = Boolean(options.length);
+  setVisible(els.sendPreparedInventoryEmpty, !hasOptions);
+  setVisible(els.walletPreparedSliderWrap, hasOptions);
+  if (!hasOptions) {
+    if (els.walletPreparedSelectionValue) els.walletPreparedSelectionValue.textContent = "0 ETH";
+    if (els.walletPreparedSelectionMeta) els.walletPreparedSelectionMeta.textContent = "Prepare chunks first, then choose their summed amount here.";
+    if (els.walletPreparedSlider) {
+      els.walletPreparedSlider.disabled = true;
+      els.walletPreparedSlider.min = "0";
+      els.walletPreparedSlider.max = "0";
+      els.walletPreparedSlider.value = "0";
+    }
+    els.walletSendSubmitButton.textContent = "Send off-grid";
+    return;
+  }
+  if (els.walletPreparedSlider) {
+    els.walletPreparedSlider.disabled = false;
+    els.walletPreparedSlider.min = "0";
+    els.walletPreparedSlider.max = String(Math.max(0, options.length - 1));
+    els.walletPreparedSlider.value = String(ui.sendOptionIndex);
+  }
+  if (els.walletPreparedSelectionValue) {
+    els.walletPreparedSelectionValue.textContent = `${current?.amountEth || "0"} ETH`;
+  }
+  if (els.walletPreparedSelectionMeta) {
+    els.walletPreparedSelectionMeta.textContent = current
+      ? `${current.noteCount} chunks | ${current.partsLabel.replaceAll(" x ", "x")} | exp ${fmtEpoch(current.expiresAt)}`
+      : "Move the slider to sum prepared chunks.";
+  }
+  els.walletSendSubmitButton.textContent = current
+    ? `Send ${current.amountEth} ETH off-grid`
+    : "Send off-grid";
+}
+
 function renderCreatedNotes(notes) {
   if (!notes.length) {
     els.createdNotesList.innerHTML = '<div class="node-empty">No notes created yet.</div>';
     return;
   }
-  els.createdNotesList.innerHTML = notes.map((note) => {
+  const renderNoteCard = (note, compact = false) => {
     const tone = noteTone(note);
-    const canCancel = ["committed", "mesh_send_failed", "sending_over_mesh", "sent_over_mesh", "resent_over_mesh", "cancel_submitted", "delivered"].includes(note.status);
+    const canCancel = ["prepared", "mesh_send_failed", "sending_over_mesh", "sent_over_mesh", "resent_over_mesh", "cancel_submitted", "delivered"].includes(note.status);
     const canResend = Boolean(note.payload) && ["committed", "mesh_send_failed", "sent_over_mesh", "resent_over_mesh"].includes(note.status);
     const progress = getProgressInfo(note);
     const chunkInfo = progress.total ? `${progress.current}/${progress.total}` : "-";
+    const primaryTime = note.deliveredAt || note.sentAt || note.resentAt || note.createdAt || "";
     return `
-      <article class="wallet-note-card">
+      <article class="wallet-note-card ${compact ? "wallet-note-card-compact" : ""}">
         <div class="wallet-note-head">
           <div class="wallet-note-title">${esc(note.amountEth)} ETH</div>
           <span class="wallet-note-badge ${tone === "danger" ? "is-danger" : tone === "success" ? "is-success" : "is-warning"}">${esc(formatStatusLabel(note.status))}</span>
@@ -562,18 +839,35 @@ function renderCreatedNotes(notes) {
           </div>
         </div>
         <div class="wallet-note-meta">To node: ${esc(note.recipientNodeId)}</div>
+        ${compact
+          ? `<div class="wallet-note-meta">When: ${esc(fmtTime(primaryTime))}</div>`
+          : `
         <div class="wallet-note-meta">Recipient: ${esc(short(note.recipientAddress))}</div>
         <div class="wallet-note-meta">Expires: ${esc(fmtEpoch(note.expiry))}</div>
-        <div class="wallet-note-meta">Note ID: ${esc(short(note.noteId))}</div>
+        <div class="wallet-note-meta">Bundle ID: ${esc(short(note.noteId))}</div>
+        <div class="wallet-note-meta">Prepared chunks: ${esc(String(note.noteCount || note.noteIds?.length || 1))}</div>
         <div class="wallet-note-meta">Chunks: ${esc(chunkInfo)}</div>
-        ${note.deliveredAt ? `<div class="wallet-note-meta">Delivered: ${esc(fmtTime(note.deliveredAt))}</div>` : ""}
+        ${note.deliveredAt ? `<div class="wallet-note-meta">Delivered: ${esc(fmtTime(note.deliveredAt))}</div>` : ""}`
+        }
         ${note.memo ? `<div class="wallet-note-memo">Memo: ${esc(note.memo)}</div>` : ""}
         <div class="wallet-note-actions">
           <button type="button" data-note-action="resend" data-note-id="${esc(note.noteId)}" ${canResend ? "" : "disabled"}>Resend</button>
           <button type="button" data-note-action="cancel" data-note-id="${esc(note.noteId)}" ${canCancel ? "" : "disabled"}>Cancel</button>
         </div>
       </article>`;
-  }).join("");
+  };
+  const [latest, ...older] = notes;
+  const latestHtml = renderNoteCard(latest, false);
+  const olderHtml = older.length
+    ? `
+      <details class="wallet-note-stack">
+        <summary class="wallet-note-stack-summary">Earlier transfers (${older.length})</summary>
+        <div class="wallet-note-stack-list">
+          ${older.map((note) => renderNoteCard(note, true)).join("")}
+        </div>
+      </details>`
+    : "";
+  els.createdNotesList.innerHTML = `${latestHtml}${olderHtml}`;
 }
 
 function renderHistory(activity) {
@@ -606,17 +900,18 @@ function renderSettings(state) {
 }
 
 async function renderState(state) {
-  ui.state = state;
-  renderDevice(state);
-  renderNodes(state.nodes || []);
-  renderRecipients(state.nodes || []);
-  renderRecipientStatus();
-  renderReceivedNotes(state.receivedNotes || []);
-  renderCreatedNotes(state.createdNotes || []);
+    ui.state = state;
+    renderDevice(state);
+    renderNodes(state.nodes || []);
+    renderRecipients(state.nodes || []);
+    renderIncomingTransfers(state.incomingTransfers || []);
+    renderReceivedNotes(state.receivedNotes || []);
+    renderCreatedNotes(state.createdNotes || []);
   renderHistory(state.activity || []);
-  renderSettings(state);
-  await renderWallet(state);
-}
+    renderSettings(state);
+    await renderWallet(state);
+    renderRecipientStatus();
+  }
 
 async function loadState() {
   const state = await api("/api/state");
@@ -679,11 +974,25 @@ document.querySelectorAll("[data-wallet-view]").forEach((button) => button.addEv
   openWallet(ui.walletView);
 }));
 
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-home-receive-notes]");
+  if (!button) return;
+  ui.walletView = "receive";
+  ui.receiveTab = "notes";
+  openWallet("receive");
+});
+
 els.receiveWalletTab?.addEventListener("click", () => { ui.receiveTab = "wallet"; updateTabs(); });
 els.receiveNotesTab?.addEventListener("click", () => { ui.receiveTab = "notes"; updateTabs(); });
 els.sendNotesTab?.addEventListener("click", () => { ui.sendTab = "notes"; updateTabs(); });
 els.sendWalletTab?.addEventListener("click", () => { ui.sendTab = "wallet"; updateTabs(); });
 els.walletRecipientInput?.addEventListener("change", () => {
+  renderRecipientStatus();
+});
+
+els.walletPreparedSlider?.addEventListener("input", () => {
+  ui.sendOptionIndex = Number(els.walletPreparedSlider.value || 0);
+  renderPreparedSendOptions(ui.state?.preparedNotes || []);
   renderRecipientStatus();
 });
 
@@ -814,19 +1123,39 @@ els.withdrawForm?.addEventListener("submit", async (event) => {
   }
 });
 
+els.prepareForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    setStatus(els.prepareStatus, "Preparing off-grid amount...", "warning");
+    const data = await post("/api/offgrid/prepare", {
+      amountEth: els.prepareAmountInput.value.trim(),
+      expiryDays: Number(els.prepareExpiryDaysInput.value || 7)
+    });
+    setStatus(els.prepareStatus, `Prepared ${short(data.note?.noteId || "")}`, "success");
+    els.prepareForm.reset();
+    els.prepareExpiryDaysInput.value = "7";
+    await loadState();
+  } catch (error) {
+    setStatus(els.prepareStatus, error.message, "danger");
+  }
+});
+
 els.walletSendForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    setStatus(els.walletSendStatus, "Committing note and sending over mesh...", "warning");
+    const selected = getCurrentPreparedSendOption();
+    if (!selected?.noteIds?.length) {
+      throw new Error("Select a prepared amount first");
+    }
+    setStatus(els.walletSendStatus, `Sending ${selected.amountEth} ETH off-grid...`, "warning");
     await post("/api/notes/create", {
       recipientNodeId: els.walletRecipientInput.value,
-      amountEth: els.walletAmountInput.value.trim(),
-      expiryMinutes: Number(els.walletExpiryInput.value || 60),
+      preparedNoteIds: selected.noteIds,
       memo: els.walletMemoInput.value.trim()
     });
-    setStatus(els.walletSendStatus, "Radio note created", "success");
+    setStatus(els.walletSendStatus, "Off-grid note sent", "success");
     els.walletSendForm.reset();
-    els.walletExpiryInput.value = "60";
+    ui.sendOptionIndex = 0;
     await loadState();
   } catch (error) {
     setStatus(els.walletSendStatus, error.message, "danger");

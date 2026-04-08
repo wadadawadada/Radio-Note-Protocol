@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import sys
+import time
 import traceback
 from typing import Any
 
@@ -199,28 +200,63 @@ def main() -> None:
             text = repair_text(payload.get("text") or "")
             if payload.get("textBase64"):
                 text = base64.b64decode(str(payload.get("textBase64"))).decode("utf-8")
+            want_ack = bool(payload.get("wantAck"))
+            wait_for_ack = bool(payload.get("waitForAck"))
+            retry_count = max(0, int(payload.get("retryOnAckTimeout") or 0))
+            retry_delay_ms = max(0, int(payload.get("ackTimeoutRetryDelayMs") or 0))
             channel_index = max(0, min(7, int(payload.get("channelIndex", 0) or 0)))
-            send_kwargs = {
-                "text": text,
-                "destinationId": repair_text(payload.get("destinationId") or ""),
-                "wantAck": bool(payload.get("wantAck")),
-                "channelIndex": channel_index,
-            }
             packet = None
-            try:
-                packet = interface.sendText(**send_kwargs)
-            except TypeError:
-                send_kwargs.pop("channelIndex", None)
-                packet = interface.sendText(**send_kwargs)
+            acked = None
+            attempts = 0
+            max_attempts = 1 + (retry_count if want_ack and wait_for_ack else 0)
+
+            for attempt in range(max_attempts):
+                attempts = attempt + 1
+                send_kwargs = {
+                    "text": text,
+                    "destinationId": repair_text(payload.get("destinationId") or ""),
+                    "wantAck": want_ack,
+                    "channelIndex": channel_index,
+                }
+                try:
+                    packet = interface.sendText(**send_kwargs)
+                except TypeError:
+                    send_kwargs.pop("channelIndex", None)
+                    packet = interface.sendText(**send_kwargs)
+                if not want_ack or not wait_for_ack:
+                    break
+                try:
+                    interface.waitForAckNak()
+                    acked = True
+                    break
+                except Exception:
+                    acked = False
+                    if attempt < max_attempts - 1 and retry_delay_ms > 0:
+                        time.sleep(retry_delay_ms / 1000)
+
+            if want_ack and wait_for_ack and acked is False:
+                emit(
+                    "error",
+                    {
+                        "message": f"ack timeout for {repair_text(payload.get('destinationId') or '')}",
+                        "destinationId": repair_text(payload.get("destinationId") or ""),
+                        "text": text,
+                        "attempts": attempts,
+                        "clientMsgId": payload.get("clientMsgId"),
+                    },
+                )
 
             emit(
                 "sent",
                 {
-                    "destinationId": send_kwargs["destinationId"],
+                    "destinationId": repair_text(payload.get("destinationId") or ""),
                     "text": text,
                     "channelIndex": channel_index,
                     "packetId": getattr(packet, "id", None),
                     "clientMsgId": payload.get("clientMsgId"),
+                    "wantAck": want_ack,
+                    "acked": acked,
+                    "attempts": attempts,
                 },
             )
         except Exception as exc:

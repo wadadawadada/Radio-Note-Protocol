@@ -23,7 +23,6 @@ contract RadioNoteVault is EIP712, ReentrancyGuard {
 
     struct Commitment {
         address issuer;
-        address recipient;
         uint256 amount;
         uint64 expiry;
         bool spent;
@@ -36,13 +35,7 @@ contract RadioNoteVault is EIP712, ReentrancyGuard {
 
     event Deposited(address indexed issuer, uint256 amount);
     event Withdrawn(address indexed issuer, uint256 amount);
-    event NoteCommitted(
-        bytes32 indexed noteId,
-        address indexed issuer,
-        address indexed recipient,
-        uint256 amount,
-        uint64 expiry
-    );
+    event NotePrepared(bytes32 indexed noteId, address indexed issuer, uint256 amount, uint64 expiry);
     event NoteRedeemed(
         bytes32 indexed noteId,
         address indexed issuer,
@@ -70,9 +63,8 @@ contract RadioNoteVault is EIP712, ReentrancyGuard {
         emit Withdrawn(msg.sender, amount);
     }
 
-    function commitNote(bytes32 noteId, address recipient, uint256 amount, uint64 expiry) external {
+    function prepareNote(bytes32 noteId, uint256 amount, uint64 expiry) external {
         require(noteId != bytes32(0), "noteId required");
-        require(recipient != address(0), "recipient required");
         require(amount > 0, "amount required");
         require(expiry > block.timestamp, "expiry must be in future");
         require(commitments[noteId].issuer == address(0), "note already exists");
@@ -86,14 +78,13 @@ contract RadioNoteVault is EIP712, ReentrancyGuard {
         reservedBalance[msg.sender] += amount;
         commitments[noteId] = Commitment({
             issuer: msg.sender,
-            recipient: recipient,
             amount: amount,
             expiry: expiry,
             spent: false,
             canceled: false
         });
 
-        emit NoteCommitted(noteId, msg.sender, recipient, amount, expiry);
+        emit NotePrepared(noteId, msg.sender, amount, expiry);
     }
 
     function cancelExpiredNote(bytes32 noteId) external {
@@ -122,7 +113,6 @@ contract RadioNoteVault is EIP712, ReentrancyGuard {
         require(!commitment.spent, "Note already redeemed");
         require(!commitment.canceled, "Note canceled");
         require(commitment.issuer == note.issuer, "Issuer mismatch");
-        require(commitment.recipient == note.recipient, "Recipient mismatch");
         require(commitment.amount == note.amount, "Amount mismatch");
         require(commitment.expiry == note.expiry, "Expiry mismatch");
 

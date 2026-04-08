@@ -116,7 +116,7 @@
             <button type="button" class="wallet-quick-button is-active" data-wallet-view="home" aria-label="Home" title="Home"><svg viewBox="0 0 24 24"><path d="M4 10.5L12 4l8 6.5"></path><path d="M6 9.5V20h12V9.5"></path></svg><span>Home</span></button>
             <button type="button" class="wallet-quick-button" data-wallet-view="receive" aria-label="Receive" title="Receive"><svg viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="M8 11l4 4 4-4"></path><path d="M3 19h18"></path></svg><span>Receive</span></button>
             <button type="button" class="wallet-quick-button" data-wallet-view="send" aria-label="Send" title="Send"><svg viewBox="0 0 24 24"><path d="M12 21V9"></path><path d="M8 13l4-4 4 4"></path><path d="M3 5h18"></path></svg><span>Send</span></button>
-            <button type="button" class="wallet-quick-button" data-wallet-view="vault" aria-label="Vault" title="Vault"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"></path><path d="M9 9h6v6H9z"></path></svg><span>Vault</span></button>
+            <button type="button" class="wallet-quick-button" data-wallet-view="vault" aria-label="Prepare" title="Prepare"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"></path><path d="M9 9h6v6H9z"></path></svg><span>Prepare</span></button>
             <button type="button" class="wallet-quick-button" data-wallet-view="history" aria-label="Activity" title="Activity"><svg viewBox="0 0 24 24"><path d="M12 7v5l3 3"></path><circle cx="12" cy="12" r="9"></circle></svg><span>Activity</span></button>
             <button type="button" class="wallet-quick-button" data-wallet-view="settings" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2a1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.2a1 1 0 0 0-.6-.9a1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1a1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.2a1 1 0 0 0 .9-.6a1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2h.1a1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.2a1 1 0 0 0 .6.9a1 1 0 0 0 1.1-.2l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1v.1a1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.2a1 1 0 0 0-.9.6z"></path></svg><span>Settings</span></button>
           </div>
@@ -138,13 +138,13 @@
 
               <div class="wallet-overview">
                 <div class="wallet-balance-card">
-                  <div class="wallet-balance-label">Vault Available ETH</div>
+                  <div class="wallet-balance-label">Spendable Off-grid ETH</div>
                   <div class="wallet-balance-value-row">
                     <div id="vaultAvailableBalanceValue" class="wallet-balance-value">-</div>
                   </div>
                   <div class="wallet-balance-sub-row">
-                    <span id="vaultAvailableSub" class="wallet-balance-sub">Ready to commit into radio notes</span>
-                    <button type="button" class="wallet-inline-action wallet-inline-action-compact" data-wallet-view="vault">Vault</button>
+                    <span id="vaultAvailableSub" class="wallet-balance-sub">Available to prepare from vault</span>
+                    <button type="button" class="wallet-inline-action wallet-inline-action-compact" data-wallet-view="vault">Prepare</button>
                   </div>
                 </div>
                 <div class="wallet-balance-card wallet-balance-card-secondary">
@@ -153,8 +153,21 @@
                   <div class="wallet-balance-sub-row">
                     <span id="walletBalanceSub" class="wallet-balance-sub">Local EVM wallet balance</span>
                   </div>
+                    <div id="walletClaimableRow" class="wallet-claimable-row" hidden>
+                      <span id="walletClaimableValue" class="wallet-claimable-value">+0 ETH claimable (offline)</span>
+                      <button type="button" class="wallet-inline-action wallet-inline-action-compact" data-home-receive-notes="1">Redeem</button>
+                    </div>
+                    <div id="walletIncomingRow" class="wallet-home-progress-row" hidden>
+                      <div class="wallet-home-progress-copy">
+                        <div id="walletIncomingLabel" class="wallet-home-progress-label">Receiving over mesh</div>
+                        <div class="wallet-progress-track wallet-progress-track-home">
+                          <div id="walletIncomingFill" class="wallet-progress-fill is-warning" style="width:0%"></div>
+                        </div>
+                      </div>
+                      <button type="button" class="wallet-inline-action wallet-inline-action-compact" data-home-receive-notes="1">Open</button>
+                    </div>
+                  </div>
                 </div>
-              </div>
 
               <div id="walletHomeNoWallet" class="wallet-create-block">
                 <div class="wallet-home-copy">
@@ -196,6 +209,8 @@
                 </div>
               </div>
               <div id="receiveNotesPanel" class="hidden">
+                <div class="wallet-section-divider">Receiving now</div>
+                <div id="incomingTransfersList" class="card-list wallet-card-list"></div>
                 <div class="wallet-section-divider">Received radio notes</div>
                 <div id="receivedNotesList" class="card-list wallet-card-list"></div>
               </div>
@@ -208,8 +223,8 @@
                 <button id="sendWalletTab" type="button" class="wallet-receive-tab">On-chain</button>
               </div>
               <div id="sendNotesPanel">
-                <div class="wallet-section-divider">Send off-grid proof</div>
-                <div class="wallet-balance-pill"><span>Spendable from vault:</span> <strong id="sendVaultAvailable">-</strong></div>
+                <div class="wallet-section-divider">Send off-grid</div>
+                <div class="wallet-balance-pill"><span>Spendable off-grid:</span> <strong id="sendVaultAvailable">-</strong></div>
                 <form id="walletSendForm" class="wallet-form-grid">
                   <label class="wallet-field" for="walletRecipientInput">
                     <span>Recipient node</span>
@@ -219,11 +234,23 @@
                     </div>
                   </label>
                   <div id="walletRecipientStatus" class="device-status-text wallet-field-wide">Pick a node and run Check before sending.</div>
-                  <label class="wallet-field" for="walletAmountInput"><span>Amount ETH</span><input id="walletAmountInput" type="text" placeholder="0.005"></label>
-                  <label class="wallet-field" for="walletExpiryInput"><span>Expiry mins</span><input id="walletExpiryInput" type="number" min="5" value="60"></label>
+                  <div class="wallet-field wallet-field-wide wallet-field-stack">
+                    <div id="walletPreparedSliderWrap" class="wallet-send-slider-wrap" hidden>
+                      <div class="wallet-send-slider-head">Select prepared amount</div>
+                      <div class="wallet-send-slider-row">
+                        <strong id="walletPreparedSelectionValue">0 ETH</strong>
+                        <input id="walletPreparedSlider" class="wallet-send-slider" type="range" min="0" max="0" value="0" step="1" disabled>
+                      </div>
+                      <span id="walletPreparedSelectionMeta" class="wallet-send-slider-meta">Move the slider to sum prepared chunks.</span>
+                    </div>
+                  </div>
+                  <div id="sendPreparedInventoryEmpty" class="wallet-hint wallet-field-wide" hidden>
+                    No prepared off-grid amounts ready.
+                    <button type="button" class="wallet-hint-link" data-wallet-view="vault">Prepare</button>
+                  </div>
                   <label class="wallet-field wallet-field-wide" for="walletMemoInput"><span>Memo</span><input id="walletMemoInput" type="text" placeholder="optional"></label>
                   <div class="wallet-form-actions wallet-field-wide">
-                    <button id="walletSendSubmitButton" type="submit">Commit + send</button>
+                    <button id="walletSendSubmitButton" type="submit">Send off-grid</button>
                     <div id="walletSendStatus" class="device-status-text" role="status" aria-live="polite"></div>
                   </div>
                 </form>
@@ -244,11 +271,27 @@
             </section>
 
             <section id="walletPanelVault" class="wallet-view-panel" hidden>
-              <div class="wallet-screen-head"><div><h3>Vault</h3><div class="wallet-home-subtitle">Lock ETH for radio-note commitments</div></div></div>
+              <div class="wallet-screen-head"><div><h3>Prepare</h3><div class="wallet-home-subtitle">Turn vault ETH into ready off-grid notes</div></div></div>
               <div class="wallet-fund-card">
                 <div class="modal-label">Vault balances</div>
                 <div class="wallet-balance-pill"><span>Available</span><strong id="vaultPanelAvailable">-</strong></div>
                 <div class="wallet-balance-pill"><span>Reserved</span><strong id="vaultPanelReserved">-</strong></div>
+              </div>
+              <div class="wallet-fund-card">
+                <div class="modal-label">Prepare off-grid amount</div>
+                <div class="wallet-balance-pill"><span>Available to prepare</span><strong id="prepareAvailableValue">-</strong></div>
+                <form id="prepareForm" class="wallet-form-grid">
+                  <label class="wallet-field" for="prepareAmountInput"><span>Amount ETH</span><input id="prepareAmountInput" type="text" placeholder="0.005"></label>
+                  <label class="wallet-field" for="prepareExpiryDaysInput"><span>Expiry days</span><input id="prepareExpiryDaysInput" type="number" min="1" value="7"></label>
+                  <div class="wallet-form-actions wallet-field-wide">
+                    <button type="submit">Prepare</button>
+                    <div id="prepareStatus" class="device-status-text" role="status" aria-live="polite"></div>
+                  </div>
+                </form>
+              </div>
+              <div class="wallet-fund-card">
+                <div class="modal-label">Ready off-grid amounts</div>
+                <div id="preparedNotesList" class="card-list wallet-card-list"></div>
               </div>
               <div class="wallet-fund-card">
                 <div class="modal-label">Deposit ETH</div>
