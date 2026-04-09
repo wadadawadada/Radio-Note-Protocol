@@ -1,124 +1,188 @@
-# Radio Note Wallet
+# Radio Note Protocol
 
-Retro local wallet for moving **prepared Sepolia ETH claims** over **Meshtastic**.
+*An off-grid protocol for transporting pre-authorized Sepolia ETH claims over Meshtastic and redeeming them later on-chain.*
 
-This app is not "ETH over LoRa" in the literal sense. Real ETH is locked in a Sepolia smart contract, then the wallet prepares off-grid notes in advance. Those notes are transported over Meshtastic. The receiver later redeems them on-chain and gets real ETH.
+Radio Note Protocol is the core system in this repository. It defines a model where real ETH is locked in a Sepolia smart contract, off-grid redemption notes are prepared in advance, those notes are transported over **Meshtastic**, and the receiver later redeems on-chain.
 
-## What It Does
+`Radio Note Wallet` is the reference local wallet and UI included in this repo for creating wallets, preparing notes, sending them over radio, receiving them, and redeeming them.
 
-- Local seed-based Sepolia wallet inside the app
-- Sepolia ETH balance view and normal on-chain send
-- `RadioNoteVault` contract for deposit, prepare, withdraw, cancel, redeem
-- Meshtastic USB bridge over Python
-- Offline send workflow based on **prepared off-grid chunks**
-- Recipient node check / handshake before send
-- Chunked radio transport with progress on sender and receiver
-- On-chain redeem tracking for the sender activity log
-- Retro UI based on the `blackbox_node` design language
+**This is not "ETH over LoRa" in the literal sense.** The radio leg carries signed redemption data for value that was already reserved in the contract. The ETH itself stays in `RadioNoteVault` on Sepolia until the receiver redeems.
 
-## Core Model
+> Experimental prototype. This repo is for Sepolia + Meshtastic testing and protocol exploration, not production custody.
 
-There are 4 different balances / states in the UI:
+## Why It Matters
+
+This project explores a practical off-grid crypto transport model:
+
+- keep settlement anchored to Ethereum on **Sepolia**
+- move value-bearing claims over **Meshtastic**
+- redeem later when the receiver is back online
+
+What the app already does:
+
+- runs a local seed-based Sepolia wallet inside the app
+- shows Sepolia ETH balance and supports normal on-chain ETH send
+- uses the `RadioNoteVault` contract for deposit, prepare, withdraw, cancel, and redeem flows
+- uses a Python Meshtastic USB bridge for radio transport
+- sends only **prepared off-grid chunks**, not live on-chain transactions
+- checks the recipient node before sending
+- transmits radio-note bundles in chunks with sender and receiver progress
+- tracks redeem status from Sepolia contract state, not just mesh messages
+- presents the flow in a retro local UI aligned with the `blackbox_node` style
+
+## How It Works
+
+1. A wallet is created locally inside the app.
+2. The sender deposits Sepolia ETH into `RadioNoteVault`.
+3. The sender prepares one or more off-grid chunks on-chain. Each prepared chunk reserves value inside the contract under a unique `noteId` and expiry.
+4. When sending, the app checks the recipient node, signs recipient-bound redemption notes for the selected prepared chunks, bundles them, and transports them over Meshtastic.
+5. The receiver stores those notes locally and sees them as claimable offline value.
+6. When internet is available again, the receiver redeems the notes on Sepolia and the contract releases ETH to the receiver wallet.
+
+Sender-side redemption visibility is confirmed from the smart contract. The sender does not have to trust a radio message to know whether a note was redeemed.
+
+## Core Model / Balances
+
+The UI revolves around four main states:
 
 - `On-chain ETH`
-  ETH sitting directly on the wallet address.
+  ETH sitting directly on the local wallet address.
 
 - `Vault Available`
-  ETH already deposited into the smart contract, but not yet turned into off-grid chunks.
+  ETH already deposited into `RadioNoteVault`, but not yet prepared for off-grid transfer.
 
 - `Spendable Off-grid`
-  ETH already prepared as off-grid chunks. This is what you can send **without internet**.
+  ETH already prepared as off-grid chunks and ready to send without internet.
 
 - `Claimable (offline)`
-  Notes you received over Meshtastic but have not redeemed on-chain yet.
+  Notes received over Meshtastic that are valid for the local wallet but not yet redeemed on-chain.
+
+Under the hood, prepared notes are represented by reserved commitments in the vault contract. The send slider builds a summed send amount from those prepared chunks.
 
 ## Online vs Offline
 
 ### Works offline
 
 - Meshtastic node discovery
-- Recipient `Check`
-- Off-grid send from already prepared chunks
-- Receiving radio notes
-- Viewing incoming/offline claimable value
+- recipient `Check`
+- off-grid send from already prepared chunks
+- receiving radio notes
+- viewing incoming transfer progress
+- viewing `Claimable (offline)` value
 
 ### Requires internet / RPC
 
-- Reading fresh Sepolia balances
-- Deposit to vault
-- Withdraw from vault
-- Prepare off-grid chunks
-- Redeem received notes
-- Normal on-chain ETH send
-- Sender-side confirmation that a note was redeemed on-chain
+- reading fresh Sepolia balances
+- depositing to the vault
+- withdrawing from the vault
+- preparing off-grid chunks
+- redeeming received notes
+- normal on-chain ETH send
+- sender-side refresh of redeemed note state
 
-## Current Workflow
+## Quick Start
 
-### First-time setup
-
-1. Create a local wallet in `Settings`.
-2. Copy the wallet address.
-3. Send Sepolia ETH to that address.
-4. Open `Prepare`.
-5. Deposit some ETH into the vault.
-6. Prepare one or more off-grid chunks.
-
-### Off-grid send
-
-1. Open `Send`.
-2. Choose `Recipient node`.
-3. Press `Check`.
-4. Wait until the node becomes ready.
-5. Use the prepared-amount slider to pick the summed amount from your prepared chunks.
-6. Press `Send off-grid`.
-
-### Receive + redeem
-
-1. On the receiver, incoming chunks appear live in `Home` and `Receive -> Radio Notes`.
-2. After the transfer is complete, the received amount appears as `claimable (offline)`.
-3. When internet is available, press `Redeem`.
-4. The ETH is redeemed from the contract to the receiver wallet address.
-
-### Sender-side redeem visibility
-
-The sender does **not** rely on a mesh message for this.  
-When internet is available, the sender checks the smart contract and updates:
-
-- `Activity`
-- sent note status
-- redeemed state of the bundle
-
-## Installation
-
-### Requirements
-
-- Node.js 18+
-- Python 3.10+
-- a Meshtastic device connected over USB
-- Sepolia RPC endpoint
-- Sepolia ETH for testing
-
-### Install dependencies
+1. Install Node.js 18+ and Python 3.10+.
+2. Install project dependencies:
 
 ```powershell
 npm install
 python -m pip install -r requirements.txt
 ```
 
-### Cross-platform notes
+3. Create `.env` from `.env.example` and set at least `SEPOLIA_RPC_URL`.
+4. Compile and deploy `RadioNoteVault`, or point the app at an existing Sepolia deployment.
+5. Start the app:
 
-The app logic is cross-platform. The part that differs by OS is the **Meshtastic USB serial bridge**.
+```powershell
+npm start
+```
+
+6. Open `http://127.0.0.1:7861`, create a wallet in `Settings`, fund it with Sepolia ETH, deposit into the vault, prepare chunks, and send off-grid from `Send`.
+
+## Installation / Environment
+
+### Requirements
+
+- Node.js 18+
+- Python 3.10+
+- a Meshtastic device connected over USB
+- a Sepolia RPC endpoint
+- Sepolia ETH for testing
+
+### Install Dependencies
+
+```powershell
+npm install
+python -m pip install -r requirements.txt
+```
+
+### Environment File
+
+Create `.env` from `.env.example`.
+
+Example:
+
+```env
+# Sepolia RPC endpoint used by the wallet app and deploy scripts
+SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
+
+# Optional legacy alias; leave empty unless you explicitly want to override SEPOLIA_RPC_URL
+RPC_URL=
+
+# Deployed RadioNoteVault contract address on Sepolia
+CONTRACT_ADDRESS=0x0000000000000000000000000000000000000000
+
+# Optional fixed Meshtastic serial port, for example COM7 on Windows
+MESHTASTIC_PORT=
+
+# Optional Python executable override for the Meshtastic bridge
+# Windows examples: python, py
+# macOS/Linux examples: python3, /usr/bin/python3
+PYTHON_EXECUTABLE=
+
+# Test-only deployer key for Sepolia contract deployment
+DEPLOYER_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY
+```
+
+### Environment Variables
+
+- `SEPOLIA_RPC_URL`
+  Sepolia RPC used by the wallet app and deploy script.
+
+- `RPC_URL`
+  Optional legacy alias. The code prefers `SEPOLIA_RPC_URL`.
+
+- `CONTRACT_ADDRESS`
+  Address of the deployed `RadioNoteVault` contract.
+
+- `MESHTASTIC_PORT`
+  Optional fixed serial port.
+  Examples: `COM7`, `/dev/cu.usbmodemXXXX`, `/dev/ttyACM0`
+
+- `PYTHON_EXECUTABLE`
+  Optional override for the Python command used to launch `bridge.py`.
+  Examples: `python`, `py`, `python3`, `/usr/bin/python3`
+
+- `DEPLOYER_PRIVATE_KEY`
+  Test-only key used to deploy the contract.
+
+Compatibility note: `scripts/deploy.js` also accepts legacy aliases `WALLET_PRIVATE_KEY` and `RPC_URL`.
+
+### Cross-Platform Notes
+
+The app logic is cross-platform. The OS-specific part is the Meshtastic USB serial bridge in `bridge.py`.
 
 #### Windows
 
-- usually works with `python` and `COM` ports like `COM7`
-- if `python` is not available in PATH, set `PYTHON_EXECUTABLE=py`
+- usually works with `python` and `COM` ports such as `COM7`
+- if `python` is not available in `PATH`, set `PYTHON_EXECUTABLE=py`
 
 #### macOS
 
 - serial ports usually look like `/dev/cu.usbmodem*` or `/dev/cu.usbserial*`
 - if needed, set `PYTHON_EXECUTABLE=python3`
-- you may need to allow terminal access to USB serial devices
+- terminal access to USB serial devices may need to be allowed
 
 #### Linux
 
@@ -130,47 +194,9 @@ The app logic is cross-platform. The part that differs by OS is the **Meshtastic
 sudo usermod -aG dialout $USER
 ```
 
-then log out and back in
+Then log out and back in.
 
-## Environment
-
-Create `.env` from `.env.example`.
-
-Minimal example:
-
-```env
-SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com
-CONTRACT_ADDRESS=0x0000000000000000000000000000000000000000
-MESHTASTIC_PORT=
-PYTHON_EXECUTABLE=
-DEPLOYER_PRIVATE_KEY=0xYOUR_TESTNET_PRIVATE_KEY
-```
-
-Variables:
-
-- `SEPOLIA_RPC_URL`
-  Sepolia RPC used by the wallet and deploy script.
-
-- `CONTRACT_ADDRESS`
-  Address of deployed `RadioNoteVault`.
-
-- `MESHTASTIC_PORT`
-  Optional fixed serial port.
-  Examples:
-  - Windows: `COM7`
-  - macOS: `/dev/cu.usbmodemXXXX`
-  - Linux: `/dev/ttyACM0`
-
-- `PYTHON_EXECUTABLE`
-  Optional override for the Python command used by the Meshtastic bridge.
-  Examples:
-  - Windows: `python` or `py`
-  - macOS/Linux: `python3`
-
-- `DEPLOYER_PRIVATE_KEY`
-  Test-only key used to deploy the contract.
-
-## Smart Contract
+## Smart Contract Commands
 
 ### Compile
 
@@ -190,7 +216,7 @@ artifacts/RadioNoteVault.json
 npm run contract:deploy
 ```
 
-The script prints the deployed address. Put that address into:
+The deploy script prints the Sepolia contract address. Put that address in:
 
 - `.env` as `CONTRACT_ADDRESS`
 - or the app `Settings`
@@ -207,29 +233,25 @@ Open:
 http://127.0.0.1:7861
 ```
 
-### How Python bridge startup is resolved
+### Python Bridge Resolution
 
-The backend now tries Python commands in this order:
+The backend tries Python commands in this order:
 
 - Windows:
-  - `PYTHON_EXECUTABLE` if set
-  - `python`
-  - `py -3`
+  `PYTHON_EXECUTABLE` if set, then `python`, then `py -3`
 
 - macOS / Linux:
-  - `PYTHON_EXECUTABLE` if set
-  - `python3`
-  - `python`
+  `PYTHON_EXECUTABLE` if set, then `python3`, then `python`
 
-If the bridge does not start, the first thing to try is setting `PYTHON_EXECUTABLE` explicitly in `.env`.
+If the bridge does not start, the first fix to try is setting `PYTHON_EXECUTABLE` explicitly in `.env`.
 
-## Recommended 2-Node Test
+## Recommended 2-Node Demo
 
 ### Node A
 
 1. Create wallet.
-2. Fund with Sepolia ETH.
-3. Deposit `0.02 ETH` into vault.
+2. Fund it with Sepolia ETH.
+3. Deposit `0.02 ETH` into the vault.
 4. Prepare:
    - `0.002 ETH`
    - `0.008 ETH`
@@ -241,7 +263,7 @@ If the bridge does not start, the first thing to try is setting `PYTHON_EXECUTAB
 2. Make sure Meshtastic is connected.
 3. Open `Receive`.
 
-### Send test
+### Send Test
 
 1. On Node A, open `Send`.
 2. Choose Node B.
@@ -249,27 +271,27 @@ If the bridge does not start, the first thing to try is setting `PYTHON_EXECUTAB
 4. Move the prepared slider to the amount you want.
 5. Press `Send off-grid`.
 
-### Receive test
+### Receive Test
 
 1. On Node B, watch incoming chunk progress.
 2. Confirm the note appears in `Receive -> Radio Notes`.
 3. Confirm `Home` shows claimable offline value.
 
-### Redeem test
+### Redeem Test
 
 1. On Node B, restore internet if it is offline.
 2. Press `Redeem`.
 3. Confirm on-chain ETH increases on Node B.
 4. On Node A, refresh and confirm `Activity` eventually shows `note_redeemed`.
 
-## UI Walkthrough
+## UI Overview
 
 ### Home
 
-- Shows wallet address
+- wallet address
 - `Spendable Off-grid ETH`
 - `On-chain ETH`
-- offline claimable amount
+- claimable offline amount
 - live incoming transfer progress
 
 ### Receive
@@ -284,17 +306,24 @@ If the bridge does not start, the first thing to try is setting `PYTHON_EXECUTAB
 - recipient node selection
 - `Check` handshake
 - prepared-amount slider
-- send progress
-- latest sent transfer card
-- compact older transfer history
+- off-grid send progress
+- normal on-chain ETH send
+- latest sent transfer card and older history
 
 ### Prepare
 
 - vault balances
 - deposit into vault
-- prepare off-grid chunks
+- prepare off-grid chunks with expiry
 - ready off-grid inventory
 - withdraw available vault ETH
+
+### Activity
+
+- on-chain events
+- vault events
+- announcement and handshake events
+- sent, delivered, and redeemed radio-note events
 
 ### Settings
 
@@ -303,11 +332,11 @@ If the bridge does not start, the first thing to try is setting `PYTHON_EXECUTAB
 - Meshtastic port
 - wallet creation
 - seed reveal
-- wallet reset
+- wallet delete / reset controls
 
 ## Screenshots
 
-The repo currently does **not** contain screenshot assets yet.
+Screenshot assets are not included in the repo yet.
 
 If you want the README to render screenshots, add PNG files here:
 
@@ -321,75 +350,107 @@ docs/screenshots/settings.png
 
 Recommended captures:
 
-1. `Home` with spendable off-grid and claimable offline rows visible
-2. `Prepare` with deposit + prepared chunks
+1. `Home` with `Spendable Off-grid ETH`, `On-chain ETH`, and claimable offline value visible
+2. `Prepare` with deposit flow, vault balances, and prepared chunks
 3. `Send` with recipient check and prepared-amount slider
-4. `Receive` with incoming chunk progress
-5. `Receive -> Radio Notes` showing redeem
+4. `Receive` with incoming chunk progress or received radio notes
+5. `Settings` with RPC, contract, Meshtastic port, and wallet controls
 
 ## Project Structure
 
-```text
-contracts/RadioNoteVault.sol   Solidity vault contract
-scripts/compile.js             Contract compile script
-scripts/deploy.js              Contract deploy script
-server.js                      Node backend + wallet logic + protocol logic
-bridge.py                      Python Meshtastic USB bridge
-static/index.html              UI markup
-static/wallet-ui.js            Frontend logic
-static/wallet-ui.css           Frontend styles
-data/                          Local runtime state, wallet, settings, logs
-```
+- `contracts/RadioNoteVault.sol`
+  Solidity vault contract for deposits, commitments, redemption, and expiry cancellation
 
-## Local State Files
+- `scripts/compile.js`
+  Contract compile script
 
-These are intentionally local and should not go to a public repo:
+- `scripts/deploy.js`
+  Contract deploy script
 
-- `data/wallet.json`
-- `data/settings.json`
-- `data/radio_state.json`
-- `data/logs.json`
-- `.env`
+- `server.js`
+  Node backend, wallet logic, vault integration, off-grid protocol flow, and local API
 
-The project already includes `.gitignore` and `.env.example` for this.
+- `bridge.py`
+  Python Meshtastic USB bridge
+
+- `static/index.html`
+  UI markup
+
+- `static/wallet-ui.js`
+  Frontend wallet logic
+
+- `static/wallet-ui.css`
+  Frontend wallet styling
+
+- `data/`
+  Local runtime state, wallet data, settings, logs, and cached summaries
+
+- `docs/screenshots/`
+  Optional README screenshots
 
 ## Troubleshooting
 
 ### `Meshtastic offline`
 
-- Click the device status block
-- choose a specific COM port
+- click the device status block
+- choose a specific port
 - press `Connect`
+
+### `No Meshtastic serial port detected`
+
+- connect the device over USB
+- set `MESHTASTIC_PORT` if auto-detect picks the wrong port
+- confirm the serial device is visible to the OS
+
+### `Missing Python deps`
+
+Install the bridge dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
 
 ### `Insufficient available balance`
 
-This means:
-
-- your wallet has `On-chain ETH`
-- but `Vault Available` is still `0`
+This means your wallet may have `On-chain ETH`, but `Vault Available` is still `0`.
 
 Fix:
 
-1. Open `Prepare`
-2. Deposit ETH into vault
-3. Only then prepare off-grid chunks
+1. Open `Prepare`.
+2. Deposit ETH into the vault.
+3. Then prepare off-grid chunks.
 
 ### `JsonRpcProvider failed to detect network`
 
-Your RPC URL is wrong or unavailable.  
-Set a valid `SEPOLIA_RPC_URL`.
+Your RPC URL is wrong, unavailable, or rate-limited. Set a valid `SEPOLIA_RPC_URL`.
 
 ### Sender does not see redeem yet
 
-Sender learns about redeem from the smart contract.  
-So the sender must have:
+Sender-side redemption status comes from the smart contract, not from a radio message.
 
-- internet
-- valid Sepolia RPC
+Make sure the sender has:
+
+- internet access
+- a valid Sepolia RPC
 
 Then refresh the app state.
 
-## Important Note
+## Security / Prototype Warning
 
-This is a testnet prototype for Sepolia and Meshtastic experimentation.  
-Do not treat it as production-grade custody software.
+This is a **Sepolia testnet prototype** for Meshtastic and off-grid note transport experiments.
+
+- do not treat it as production-grade custody software
+- do not use mainnet funds
+- protect the local seed phrase like a real wallet secret
+- expect rough edges in transport, local state handling, and recovery flows
+
+The app writes sensitive local state under `data/` and the repo root, including:
+
+- `data/wallet.json`
+- `data/settings.json`
+- `data/radio_state.json`
+- `data/logs.json`
+- `data/wallet_summary.json`
+- `.env`
+
+Keep those files local. The repo already includes `.gitignore` and `.env.example` to support that workflow.
