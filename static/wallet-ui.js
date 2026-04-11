@@ -1254,6 +1254,30 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+// ── Theme Management ──────────────────────────────────────────────────
+const THEME_KEY = "rnw_theme";
+
+function applyTheme(name) {
+  const html = document.documentElement;
+  if (!name || name === "navy") {
+    html.removeAttribute("data-theme");
+  } else {
+    html.setAttribute("data-theme", name);
+  }
+  document.querySelectorAll("[data-theme-select]").forEach((btn) => {
+    btn.classList.toggle("is-active", btn.dataset.themeSelect === (name || "navy"));
+  });
+  localStorage.setItem(THEME_KEY, name || "navy");
+}
+
+document.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-theme-select]");
+  if (!btn) return;
+  applyTheme(btn.dataset.themeSelect);
+});
+
+applyTheme(localStorage.getItem(THEME_KEY) || "navy");
+
 updateWalletPanels();
 updateTabs();
 loadState().catch((error) => setStatus(els.runtimeError, error.message, "danger"));

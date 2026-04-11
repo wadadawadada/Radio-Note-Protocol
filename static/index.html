@@ -6,6 +6,7 @@
     <title>Radio Note Wallet</title>
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/wallet-ui.css">
+    <script>(function(){var t=localStorage.getItem('rnw_theme');if(t&&t!=='navy')document.documentElement.setAttribute('data-theme',t);})();</script>
   </head>
   <body>
     <main class="layout">
@@ -359,6 +360,27 @@
 
             <section id="walletPanelSettings" class="wallet-view-panel" hidden>
               <div class="wallet-screen-head"><div><h3>Settings</h3></div></div>
+              <div class="modal-section wallet-section">
+                <div class="modal-label">Appearance</div>
+                <div class="theme-picker">
+                  <button class="theme-option" data-theme-select="navy" title="Navy — default dark theme">
+                    <span class="theme-swatch" style="background:linear-gradient(135deg,#161d26,#5a8fb0)"></span>
+                    <span class="theme-label">Navy</span>
+                  </button>
+                  <button class="theme-option" data-theme-select="win95" title="Win95 — classic Windows 95 style">
+                    <span class="theme-swatch" style="background:linear-gradient(135deg,#c0c0c0,#000080)"></span>
+                    <span class="theme-label">Win95</span>
+                  </button>
+                  <button class="theme-option" data-theme-select="ethereum" title="Ethereum — ETH crypto palette">
+                    <span class="theme-swatch" style="background:linear-gradient(135deg,#12142a,#627EEA)"></span>
+                    <span class="theme-label">Ethereum</span>
+                  </button>
+                  <button class="theme-option" data-theme-select="bubblegum" title="Bubblegum — light pastel theme">
+                    <span class="theme-swatch" style="background:linear-gradient(135deg,#fce4f4,#e91e8c)"></span>
+                    <span class="theme-label">Bubblegum</span>
+                  </button>
+                </div>
+              </div>
               <div class="modal-section wallet-section">
                 <div class="modal-label">Runtime</div>
                 <form id="settingsForm" class="wallet-form-grid">
